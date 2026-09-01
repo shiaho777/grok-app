@@ -66,8 +66,14 @@ export function decodeGitPath(input: string): string {
     const code = s.charCodeAt(i);
     if (code < 0x80) {
       bytes.push(code);
+    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+      // High surrogate: encode the whole astral pair in one step — feeding a
+      // lone surrogate to TextEncoder emits U+FFFD per unit and corrupts
+      // emoji / extension-B filenames.
+      const enc = new TextEncoder().encode(s.slice(i, i + 2));
+      for (let k = 0; k < enc.length; k++) bytes.push(enc[k]!);
+      i++;
     } else {
-      // Encode remaining as UTF-8 via TextEncoder for this char + trail
       const enc = new TextEncoder().encode(s[i]!);
       for (let k = 0; k < enc.length; k++) bytes.push(enc[k]!);
     }
