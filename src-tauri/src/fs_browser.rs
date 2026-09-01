@@ -794,6 +794,20 @@ fn resolve_path_buf_smart(project_root: Option<&str>, path: &str) -> Result<Path
 
     // 2) Relative: project_root/rel, then parent(project)/rel, then suffix
     let rel = raw.trim_start_matches("./");
+    // Relative inputs must stay under the project root: `..` (or a drive /
+    // absolute form that survived normalization) would let
+    // `root.join(rel)` escape via OS resolution, and the result is then
+    // granted in path_scope + readable — the same escape lexical_join
+    // rejects for the project-relative fs_* commands.
+    let rel_components_ok = std::path::Path::new(rel).components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    if !rel_components_ok {
+        return Err("path escapes project root".into());
+    }
     if let Some(root) = project_root {
         let root_pb = PathBuf::from(root);
         if root_pb.is_dir() {
@@ -1781,5 +1795,30 @@ mod tests {
         p.push(format!("grok-fs-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn open_path_smart_rejects_parent_escape() {
+        // `..` must not resolve outside the project root (the joined result
+        // would otherwise be granted in path_scope and readable).
+        let dir = tempfile_dir();
+        let project = dir.join("proj");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(dir.join("secret.txt"), b"secret").unwrap();
+
+        let r = open_path_smart(Some(project.to_str().unwrap()), "../secret.txt");
+        assert!(r.is_err(), "{r:?}");
+
+        let r2 = open_path_smart(Some(project.to_str().unwrap()), "docs/../../../secret.txt");
+        assert!(r2.is_err(), "{r2:?}");
+
+        // Absolute paths outside the project are still allowed (existing
+        // behavior for chat cards citing absolute paths).
+        let abs = resolve_path_smart(
+            Some(project.to_str().unwrap()),
+            dir.join("secret.txt").to_str().unwrap(),
+        );
+        assert!(abs.is_ok(), "{abs:?}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
