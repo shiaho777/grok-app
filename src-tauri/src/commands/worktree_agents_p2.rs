@@ -596,6 +596,32 @@ fn git_current_branch(project: &str) -> Option<String> {
     }
 }
 
+/// Default branch of `origin` for `gh pr create --base` fallback:
+/// `refs/remotes/origin/HEAD` when the clone recorded it, else None.
+pub fn git_remote_default_branch(project: &str) -> Option<String> {
+    let out = crate::process_util::command("git")
+        .args([
+            "-C",
+            project,
+            "symbolic-ref",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // `origin/main` → `main`
+    let name = s.strip_prefix("origin/").unwrap_or(&s);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 fn probe_binary_on_path(bin: &str) -> bool {
     let mut cmd = crate::process_util::command(bin);
     if let Some(path_env) = crate::process_util::enriched_path_env() {
@@ -798,8 +824,11 @@ pub async fn gh_pr_create(
         Some(r) => Some(r),
         None => upstream_or.clone().or_else(|| origin_or.clone()),
     };
-    let base_branch = sanitize_ship_branch(base.as_deref())?
-        .unwrap_or_else(|| "main".into());
+    let base_branch = match sanitize_ship_branch(base.as_deref())? {
+        Some(b) => b,
+        None => git_remote_default_branch(&project)
+            .unwrap_or_else(|| "main".into()),
+    };
     let head_ref = if let Some(h) = head.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         if h.starts_with('-') || h.contains('\0') || h.contains('\n') {
             return Err("invalid head".into());
@@ -978,6 +1007,52 @@ mod ship_flow_tests {
     fn sanitize_pr_title_required() {
         assert!(sanitize_pr_title("  ").is_err());
         assert_eq!(sanitize_pr_title("Hello\nworld").unwrap(), "Hello world");
+    }
+
+    #[test]
+    fn remote_default_branch_strips_origin_prefix() {
+        let dir = std::env::temp_dir().join(format!(
+            "grok-ship-base-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_s = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| {
+            let out = crate::process_util::command("git")
+                .args(["-C", &dir_s])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+        };
+        git(&["init", "-q", "-b", "trunk"]);
+        git(&["config", "user.email", "t@t.c"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("f.txt"), b"x").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        // No remote yet → None
+        assert_eq!(git_remote_default_branch(&dir_s), None);
+        // Simulate a cloned remote with non-main default branch.
+        // symbolic-ref requires the HEAD target to be a real ref, so create
+        // origin/trunk at HEAD, then point origin/HEAD at it.
+        let gitdir = dir.join(".git");
+        crate::process_util::command("git")
+            .args(["-C", &dir_s, "update-ref", "refs/remotes/origin/trunk", "HEAD"])
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(gitdir.join("refs/remotes/origin")).unwrap();
+        std::fs::write(
+            gitdir.join("refs/remotes/origin/HEAD"),
+            b"ref: refs/remotes/origin/trunk\n",
+        )
+        .unwrap();
+        assert_eq!(
+            git_remote_default_branch(&dir_s).as_deref(),
+            Some("trunk")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
