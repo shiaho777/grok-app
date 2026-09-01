@@ -120,8 +120,10 @@ function extractVersionBody(
   markdown: string,
   version: string,
 ): { rest: string; body: string } | null {
+  // End-of-string anchor: JS has no `\Z` (that is a literal "Z" here), so use
+  // `(?![\s\S])` to let the lazy body run to the next `## [` heading or EOF.
   const re = new RegExp(
-    `^## \\[${escapeRegExp(version)}\\]([^\\n]*)\\n([\\s\\S]*?)(?=^## \\[|\\Z)`,
+    `^## \\[${escapeRegExp(version)}\\]([^\\n]*)\\n([\\s\\S]*?)(?=^## \\[|(?![\\s\\S]))`,
     "m",
   );
   const m = re.exec(markdown);

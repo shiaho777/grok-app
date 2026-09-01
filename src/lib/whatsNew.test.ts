@@ -107,6 +107,33 @@ describe("parseChangelogNotes", () => {
   it("returns null when the version section is missing", () => {
     expect(parseChangelogNotes(FIXTURE, "9.9.9", "en")).toBeNull();
   });
+
+  it("does not truncate the version body at a capital Z (JS has no \\Z anchor)", () => {
+    // `\Z` in a JS regex is a literal "Z": with that anchor the lazy body
+    // stopped at the first capital Z and dropped every later section.
+    const md = [
+      "## [1.2.3] - 2026-08-01",
+      "",
+      "### Added",
+      "- Zebra feature ships today.",
+      "- Zoom support added.",
+      "",
+      "### Fixed",
+      "- Crash no more.",
+      "",
+      "## [1.2.2] - 2026-07-01",
+      "",
+      "### Added",
+      "- Old row.",
+    ].join("\n");
+    const notes = parseChangelogNotes(md, "1.2.3", "en");
+    expect(notes?.sections.map((s) => s.id)).toEqual(["added", "fixed"]);
+    expect(notes?.sections[0]?.items).toEqual([
+      "Zebra feature ships today.",
+      "Zoom support added.",
+    ]);
+    expect(notes?.sections[1]?.items).toEqual(["Crash no more."]);
+  });
 });
 
 describe("changelogPopupItem", () => {
