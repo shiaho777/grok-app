@@ -10585,7 +10585,9 @@ export function AppWorkbench() {
           title,
           body,
           draft: shipDraft,
-          base: "main",
+          // Host falls back to origin's default branch when omitted —
+          // hardcoding "main" breaks repos on master / trunk.
+          base: null,
         });
       }
       const outcome = combineShipOutcome(push, pr, {
