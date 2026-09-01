@@ -4,6 +4,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
+use std::process::Stdio;
 use std::thread;
 
 /// User home directory.
@@ -131,6 +132,130 @@ pub fn apply_cli_env_tokio(cmd: &mut tokio::process::Command) {
     if let Some(path_env) = enriched_path_env() {
         cmd.env("PATH", path_env);
     }
+}
+
+/// Run a CLI binary with a hard timeout, returning (stdout, stderr, ok).
+///
+/// Spawn keeps the `Child` inside the worker thread's scope with a
+/// `KillHandle` shared to this side through a small mutex cell: on timeout the
+/// child is killed and reaped, so neither the worker thread nor the CLI
+/// process outlives the call. A plain `Command::output()` + `recv_timeout`
+/// pattern leaks both — the thread stays blocked in `wait_with_output()`
+/// forever (no `JoinHandle` is kept) and nothing ever kills the child, so
+/// repeated timed-out calls pile up orphan CLI processes.
+///
+/// `apply_env` is an optional env hook applied before spawn (callers use it
+/// for PATH / HOME / no-window policy). The timeout error is
+/// `"cli {program} timed out after {timeout_secs}s"`.
+pub fn run_cli_with_timeout(
+    program: &str,
+    args: &[String],
+    timeout_secs: u64,
+    apply_env: Option<fn(&mut StdCommand)>,
+) -> Result<(String, String, bool), String> {
+    // The worker hands the spawned Child to this side through `shared`, then
+    // polls until the child exits OR the kill flag flips. The timeout branch
+    // flips the flag and kills the child, so neither the thread nor the CLI
+    // process outlives the call.
+    let shared: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let kill_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let program_owned = program.to_string();
+    let args_owned: Vec<String> = args.to_vec();
+    let worker_shared = std::sync::Arc::clone(&shared);
+    let worker_kill = std::sync::Arc::clone(&kill_flag);
+    thread::Builder::new()
+        .name(format!("cli-timeout-{program}"))
+        .spawn(move || {
+            let mut cmd = StdCommand::new(&program_owned);
+            cmd.args(&args_owned);
+            if let Some(apply) = apply_env {
+                apply(&mut cmd);
+            }
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            let result = match cmd.spawn() {
+                Ok(child) => {
+                    if let Ok(mut slot) = worker_shared.lock() {
+                        *slot = Some(child);
+                    }
+                    // Wait loop: take the child back out and wait on it. The
+                    // kill side may already be killing it via the slot.
+                    let mut taken = worker_shared.lock().ok().and_then(|mut s| s.take());
+                    let mut out: std::io::Result<std::process::Output> =
+                        Err(std::io::Error::other("child slot lost"));
+                    if let Some(ref mut c) = taken {
+                        loop {
+                            match c.try_wait() {
+                                Ok(Some(status)) => {
+                                    // Collect piped output by reading is not
+                                    // possible post-exit via try_wait; use
+                                    // wait_with_output-equivalent: we kept
+                                    // the pipes, so read them now.
+                                    let stdout = c.stdout.take();
+                                    let stderr = c.stderr.take();
+                                    out = Ok(std::process::Output {
+                                        status,
+                                        stdout: read_pipe_to_end(stdout),
+                                        stderr: read_pipe_to_end(stderr),
+                                    });
+                                    break;
+                                }
+                                Ok(None) => {
+                                    if worker_kill.load(std::sync::atomic::Ordering::Relaxed) {
+                                        let _ = c.kill();
+                                        let _ = c.wait();
+                                        out = Err(std::io::Error::other("killed after timeout"));
+                                        break;
+                                    }
+                                    thread::sleep(std::time::Duration::from_millis(25));
+                                }
+                                Err(e) => {
+                                    out = Err(e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    out
+                }
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("spawn worker: {e}"))?;
+
+    let delivered = rx.recv_timeout(std::time::Duration::from_secs(timeout_secs));
+    match delivered {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Ok((stdout, stderr, output.status.success()))
+        }
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => {
+            // Timeout: kill + reap the wedged child; the worker's loop sees
+            // the flag / reaps and exits.
+            kill_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut slot) = shared.lock() {
+                if let Some(child) = slot.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+            Err(format!("cli {program} timed out after {timeout_secs}s"))
+        }
+    }
+}
+
+/// Drain a piped child stream (stdout or stderr) into a byte vector.
+fn read_pipe_to_end<R: std::io::Read>(pipe: Option<R>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(mut p) = pipe {
+        let _ = p.read_to_end(&mut buf);
+    }
+    buf
 }
 
 /// Build a `std::process::Command` with Windows console hidden (Fixes #162)
