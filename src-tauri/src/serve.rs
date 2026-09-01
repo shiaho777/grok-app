@@ -307,26 +307,20 @@ fn run_grok_cli_args(args: &[&str], timeout_secs: u64) -> Result<(String, String
     };
 
     let args_owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut cmd = std::process::Command::new(&cli_path);
-        cmd.args(&args_owned);
-        process_util::apply_cli_env_std(&mut cmd);
-        let result = cmd.output();
-        let _ = tx.send(result);
-    });
-
-    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Ok((stdout, stderr, output.status.success()))
+    process_util::run_cli_with_timeout(
+        &cli_path,
+        &args_owned,
+        timeout_secs,
+        Some(process_util::apply_cli_env_std),
+    )
+    .map_err(|e| {
+        if e.contains("timed out after") {
+            format!("grok command {e}")
+        } else {
+            format!("Failed to run grok: {e}")
         }
-        Ok(Err(e)) => Err(format!("Failed to run grok: {e}")),
-        Err(_) => Err(format!("grok command timed out after {timeout_secs}s")),
-    }
+    })
 }
-
 /// (cli_found, cli_supports_serve, cli_supports_remote, support_msg)
 fn probe_cli_supports_serve() -> (bool, bool, bool, Option<String>) {
     let settings = store::load_settings();
