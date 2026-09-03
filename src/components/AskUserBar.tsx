@@ -9,6 +9,7 @@ import { useAskUserQuestionnaire } from "@/hooks/useAskUserQuestionnaire";
 import { askUserDismissLocked } from "@/lib/askUserSettle";
 import { askUserBarHeading, askUserPendingPreview } from "@/lib/askUserForm";
 import { shouldAskUserSubmitOnEnter } from "@/lib/askUserKeyboard";
+import { isTypingTarget } from "@/lib/a11yFocus";
 import type { AskUserPayload } from "@/lib/session";
 
 export type AskUserBarLabels = {
@@ -79,8 +80,12 @@ export function AskUserBar({
         setCollapsed(true);
         return;
       }
+      // Plain Enter inside the free-text textarea must insert a newline, not
+      // submit the form — otherwise a half-typed custom answer is sent the
+      // moment every question has a selected option.
       if (
         shouldAskUserSubmitOnEnter(e) &&
+        !isTypingTarget(e.target) &&
         canSubmitRef.current &&
         !busyRef.current
       ) {
