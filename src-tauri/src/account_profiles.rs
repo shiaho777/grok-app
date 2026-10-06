@@ -62,7 +62,20 @@ fn load_index() -> AccountsIndex {
         return AccountsIndex::default();
     }
     match fs::read_to_string(&p) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Ok(s) if s.trim().is_empty() => AccountsIndex::default(),
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(v) => v,
+            Err(e) => {
+                // Torn / corrupt index: quarantine instead of silently
+                // returning an empty list — the next save would otherwise
+                // permanently drop every saved account snapshot.
+                tracing::error!("corrupt accounts index {} ({e}); quarantining", p.display());
+                let stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+                let bak = p.with_extension(format!("corrupt-{stamp}.json"));
+                let _ = fs::rename(&p, &bak);
+                AccountsIndex::default()
+            }
+        },
         Err(_) => AccountsIndex::default(),
     }
 }
@@ -71,7 +84,10 @@ fn save_index(idx: &AccountsIndex) -> Result<(), String> {
     let root = accounts_root();
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let raw = serde_json::to_string_pretty(idx).map_err(|e| e.to_string())?;
-    fs::write(index_path(), raw).map_err(|e| e.to_string())
+    // Temp + rename under an exclusive lock: a crash mid-write must not leave
+    // a truncated index.json (which load would read as zero accounts and the
+    // next save would persist that loss for good).
+    crate::store_lock::write_bytes_atomic(&index_path(), raw.as_bytes())
 }
 
 fn label_from_profile(p: &AccountProfile) -> String {
@@ -492,5 +508,71 @@ mod tests {
         assert!(item.available);
         assert_eq!(item.remaining_percent, Some(0.0));
         assert_eq!(item.used_percent, Some(100.0));
+    }
+}
+
+#[cfg(test)]
+mod index_persistence_tests {
+    use super::*;
+
+    /// Serialize against other tests that mutate GROK_APP_HOME.
+    struct HomeGuard(Option<String>);
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => std::env::set_var("GROK_APP_HOME", v),
+                None => std::env::remove_var("GROK_APP_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn save_index_roundtrips_and_recovers_from_torn_write() {
+        let _lock = crate::paths::APP_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "grok-acct-idx-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let prev = std::env::var("GROK_APP_HOME").ok();
+        std::env::set_var("GROK_APP_HOME", &home);
+        let _guard = HomeGuard(prev);
+        fs::create_dir_all(accounts_root()).unwrap();
+
+        let idx = AccountsIndex {
+            active_id: Some("u1".into()),
+            profiles: vec![SavedAccount {
+                id: "u1".into(),
+                email: Some("one@x.ai".into()),
+                display_name: None,
+                label: "Work".into(),
+                updated_at: "t".into(),
+            }],
+        };
+        save_index(&idx).expect("save");
+
+        // Roundtrip
+        let loaded = load_index();
+        assert_eq!(loaded.active_id.as_deref(), Some("u1"));
+        assert_eq!(loaded.profiles.len(), 1);
+        assert_eq!(loaded.profiles[0].label, "Work");
+
+        // Torn write: half-written JSON must quarantine, not silently
+        // become an empty list that a later save would persist.
+        let p = index_path();
+        fs::write(&p, "{\"activeId\":\"u1\",\"prof").unwrap();
+        let recovered = load_index();
+        assert!(recovered.profiles.is_empty());
+        let quarantined: Vec<_> = fs::read_dir(accounts_root())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains("corrupt-"))
+            .collect();
+        assert_eq!(quarantined.len(), 1, "torn index must be quarantined");
+
+        let _ = fs::remove_dir_all(&home);
     }
 }
