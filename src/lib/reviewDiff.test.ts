@@ -105,6 +105,16 @@ describe("decodeGitPath", () => {
     expect(decodeGitPath('246.md"')).toBe("246.md");
   });
 
+  it("keeps astral (surrogate-pair) characters in unquoted paths", () => {
+    // With core.quotepath=false the host emits already-decoded paths; the
+    // decoder must round-trip astral chars (emoji / Ext-B) instead of
+    // corrupting each UTF-16 unit into U+FFFD.
+    expect(decodeGitPath("docs/🦊 fix.md")).toBe("docs/🦊 fix.md");
+    expect(decodeGitPath("docs/𝛂-x.md")).toBe("docs/𝛂-x.md");
+    // BMP CJK keeps working
+    expect(decodeGitPath("docs/执行.md")).toBe("docs/执行.md");
+  });
+
   it("builds a proper tree for quoted Chinese paths", () => {
     const quoted =
       '"docs/Agent\\346\\211\\247\\350\\241\\214SOP/246.md"';
