@@ -1,4 +1,9 @@
+import { currentTurnHasEndMarker } from "../endOfTurn";
 import { bashArgFromToolTitle, inferKindFromToolCallId } from "../toolDisplay";
+import {
+  maybeCompactToolOutputForMemory,
+  shouldCompactToolOutputForMemory,
+} from "../toolOutputMemory";
 import type {
   ChatMessage,
   ContextCompactMeta,
@@ -149,6 +154,7 @@ export function toolSegmentFromFields(fields: {
   path?: string;
   input?: string;
   output?: string;
+  meta?: import("../toolPresentation").ToolPresentationMeta;
   streaming?: boolean;
   isError?: boolean;
   createdAt?: string;
@@ -163,6 +169,7 @@ export function toolSegmentFromFields(fields: {
     path: fields.path,
     input: fields.input,
     output: fields.output,
+    meta: fields.meta,
     streaming: !!fields.streaming,
     isError: !!fields.isError,
     createdAt: fields.createdAt,
@@ -214,6 +221,10 @@ export function upsertToolInSegments(
       path: tool.path || prev.path,
       // Status-only ticks must not wipe a known call argument.
       input: tool.input || prev.input,
+      // Same for stdout: sparse ticks omit output; after #1029 the standalone
+      // row may also have cleared toolOutput once woven — never erase segment.
+      output: (tool.output || "").trim() ? tool.output : prev.output,
+      meta: tool.meta || prev.meta,
       toolKind: tool.toolKind || prev.toolKind,
     };
     return next;
@@ -332,6 +343,8 @@ function toolSegmentFromMessageRow(row: ChatMessage): MessageToolSegment | null 
     if (parsed.input && !input) input = parsed.input;
     if (parsed.output && !output) output = parsed.output;
   }
+  // History rows are terminal — compact before weaving into the assistant.
+  output = maybeCompactToolOutputForMemory(output, false);
   return toolSegmentFromFields({
     toolCallId: tcid,
     title: toolStepDisplayTitle(row) || row.content || tcid,
@@ -341,6 +354,7 @@ function toolSegmentFromMessageRow(row: ChatMessage): MessageToolSegment | null 
     path,
     input,
     output,
+    meta: row.toolMeta,
     streaming: false,
     isError: !!row.isError || status === "failed" || status === "error",
     createdAt: row.createdAt,
@@ -551,12 +565,58 @@ export function weaveToolsIntoAssistantSegments(
     if (m.role !== "assistant" || m.isError || m.streaming) continue;
     const segs = m.segments?.length ? m.segments : ensureSegments(m);
     const nextSegs = reorderSegmentsToHistoryLayout(segs);
+    const compacted = compactCompletedToolSegmentOutputs(nextSegs);
     // Same array reference ⇒ already history-shaped and had segments.
-    if (nextSegs === segs && m.segments?.length) continue;
-    const derived = deriveFieldsFromSegments(nextSegs);
-    out[k] = { ...m, ...derived, segments: nextSegs };
+    if (compacted === segs && nextSegs === segs && m.segments?.length) continue;
+    const derived = deriveFieldsFromSegments(compacted);
+    out[k] = { ...m, ...derived, segments: compacted };
   }
-  return out;
+  // Standalone tool_step rows keep a second full copy after weave — drop it.
+  return releaseInlinedToolStepOutputs(out);
+}
+
+/** Compact completed tool segment stdout in place (identity-stable when clean). */
+export function compactCompletedToolSegmentOutputs(
+  segs: MessageSegment[],
+): MessageSegment[] {
+  let changed = false;
+  const next = segs.map((s) => {
+    if (s.kind !== "tool" || s.streaming) return s;
+    if (!shouldCompactToolOutputForMemory(s.output)) return s;
+    changed = true;
+    return {
+      ...s,
+      output: maybeCompactToolOutputForMemory(s.output, false),
+    };
+  });
+  return changed ? next : segs;
+}
+
+/**
+ * After tools are woven into the assistant timeline, clear `toolOutput` on the
+ * matching standalone `tool_step` rows so React does not hold two full copies.
+ * Journal on disk is unchanged; paint already hides these rows.
+ */
+export function releaseInlinedToolStepOutputs(
+  messages: ChatMessage[],
+): ChatMessage[] {
+  const inlined = new Set<string>();
+  for (const m of messages) {
+    if (m.role !== "assistant" || !m.segments?.length) continue;
+    for (const s of m.segments) {
+      if (s.kind === "tool" && s.toolCallId) inlined.add(s.toolCallId);
+    }
+  }
+  if (!inlined.size) return messages;
+  let changed = false;
+  const next = messages.map((m) => {
+    if (!isToolStepMessage(m) || !m.toolOutput) return m;
+    const id = toolCallIdOf(m);
+    if (!id || !inlined.has(id)) return m;
+    changed = true;
+    return { ...m, toolOutput: undefined };
+  });
+  return changed ? next : messages;
 }
 
 /**
@@ -822,6 +882,7 @@ export function syncTurnToolsIntoAssistant(
       path: m.toolPath,
       input: m.toolInput,
       output: m.toolOutput,
+      meta: m.toolMeta,
       streaming: !!m.streaming,
       isError: !!m.isError || status === "failed" || status === "error",
       createdAt: m.createdAt,
@@ -897,10 +958,16 @@ export function applyToolEvent(
   // erase it, and prefer the longer body when the host streams in chunks.
   const prevOutput = (prev?.toolOutput || "").trim();
   const nextOutput = (payload.output || "").trim();
-  const toolOutput =
+  const mergedRawOutput =
     (nextOutput.length >= prevOutput.length ? nextOutput : prevOutput) ||
     undefined;
+  // Terminal only: shrink to expand-UI size so WebContent does not keep 20k×N
+  // duplicates while rows stay collapsed (#1029). Running ticks keep raw growth.
+  const toolOutput = maybeCompactToolOutputForMemory(mergedRawOutput, running);
   const isError = status === "failed" || status === "error";
+  // Explicit Host presentation meta wins; otherwise keep the previous row's
+  // meta so a later sparse tick never wipes the typed card.
+  const toolMeta = payload.meta || prev?.toolMeta || undefined;
 
   // Host vision / X: **only** live on the assistant timeline. A separate
   // tool_step row + inlined segment was painting "搜索 X 信息" twice.
@@ -933,6 +1000,7 @@ export function applyToolEvent(
         toolPath,
         toolInput,
         toolOutput,
+        toolMeta,
         toolParentId: parentId,
         streaming: running,
         marker: "tool_step",
@@ -951,6 +1019,7 @@ export function applyToolEvent(
       path: toolPath,
       input: toolInput,
       output: toolOutput,
+      meta: toolMeta,
       streaming: running,
       isError,
       createdAt: prev?.createdAt || now,
@@ -974,6 +1043,7 @@ export function applyToolEvent(
     toolPath,
     toolInput,
     toolOutput,
+    toolMeta,
     toolParentId: parentId,
     streaming: running,
     marker: "tool_step",
@@ -995,6 +1065,7 @@ export function applyToolEvent(
       toolPath: toolPath || prev!.toolPath,
       toolInput: toolInput || prev!.toolInput,
       toolOutput: toolOutput || prev!.toolOutput,
+      toolMeta: toolMeta || prev!.toolMeta,
       toolKind: toolKind || prev!.toolKind,
       toolParentId: parentId || prev!.toolParentId,
     };
@@ -1014,6 +1085,7 @@ export function applyToolEvent(
     path: row.toolPath,
     input: row.toolInput,
     output: row.toolOutput,
+    meta: row.toolMeta,
     streaming: running,
     isError: !!row.isError,
     createdAt: row.createdAt || prev?.createdAt || now,
@@ -1028,7 +1100,8 @@ export function applyToolEvent(
     ...derived,
     segments: segs,
   };
-  return copy;
+  // Drop the standalone row's stdout copy once the segment holds it (#1029).
+  return releaseInlinedToolStepOutputs(copy);
 }
 
 export function applyTurnMarker(
@@ -1037,6 +1110,13 @@ export function applyTurnMarker(
 ): ChatMessage[] {
   const id = payload.messageId || `marker-${Date.now()}`;
   if (messages.some((m) => m.id === id)) return messages;
+  // Local Stop already painted a chip; Host `turn_marker` must not add a twin.
+  if (currentTurnHasEndMarker(messages)) {
+    const frozen = messages.map((m) =>
+      m.streaming ? { ...m, streaming: false } : m,
+    );
+    return frozen.some((m, i) => m !== messages[i]) ? frozen : messages;
+  }
   const marker = payload.marker || "turn_cancelled";
   const reason = (payload.reason || "cancelled").toLowerCase();
   // Match Host journal: user_stop is a neutral stop chip (not an error row).

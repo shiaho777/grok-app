@@ -53,4 +53,32 @@ describe("sessionPhase", () => {
     expect(reconcileSessionState("ready", "streaming")).toBe("ready");
     expect(reconcileSessionState("streaming", "ready")).toBe("streaming");
   });
+
+  it("reconcileSessionState keeps UI ready after user Stop while Host still streams", () => {
+    const latch = armStopLatch(createStopLatchState(), "s1", 0);
+    // Without latch, Host streaming would re-stick the composer (old bug).
+    expect(reconcileSessionState("streaming", "ready")).toBe("streaming");
+    // With an armed stop latch for this chat, keep the optimistic ready so
+    // Send stays clickable instead of flipping back to Stop.
+    expect(
+      reconcileSessionState("streaming", "ready", {
+        stopLatch: latch,
+        sessionId: "s1",
+      }),
+    ).toBe("ready");
+    expect(
+      reconcileSessionState("streaming", "ready", {
+        stopLatch: latch,
+        sessionId: "other",
+      }),
+    ).toBe("streaming");
+  });
+
+  it("reconcileSessionState keeps streaming across connect Ready mid-send", () => {
+    // ensureConnected paints Host Ready before sessionSend — must not flash Send.
+    expect(reconcileSessionState("ready", "streaming")).toBe("ready");
+    expect(
+      reconcileSessionState("ready", "streaming", { preserveStreaming: true }),
+    ).toBe("streaming");
+  });
 });

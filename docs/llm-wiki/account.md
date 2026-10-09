@@ -6,7 +6,8 @@ Product rules for **official login, membership, quota, and usage** in Grok App.
 
 1. Sign in with the **same** Grok Build CLI auth (`grok login`), not a parallel OAuth stack.
 2. Show account + membership at two depths:
-   - **User menu sheet** (sidebar footer click): compact identity, plan, quota bar, login/logout, jump to settings.
+   - **Sidebar footer identity**: avatar + display name + **compact remain** (SuperGrok remaining `%`, or DeepSeek / balance-capable custom `total CURRENCY`). Whole row opens the user menu. Signed-out / unsupported custom has no remain chip. Settings gear stays on the right.
+   - **User menu sheet** (identity click): **full quota or provider-balance card at the top** (plan + reset + bar / balance + refresh), then **saved official accounts** with honest remaining % (click another → `account_switch`; click active → Settings → Account), then what's new, tour, theme, login/logout. Settings → Account keeps the full switcher / remove / rename UI.
    - **Settings → Account**: full profile, subscription, quota, token activity heatmap, recent session call logs, CLI path, Doctor.
 3. Never log tokens, API keys, or `auth.json` secrets (redact).
 
@@ -35,6 +36,17 @@ Host **must** sync `auth.json` into agent-home on login and before each ACP spaw
 
 **Unsigned-in official route:** if `read_auth_profile().signed_in` is false (no `auth.json`, or no usable `key` / `access_token` / `refresh_token`), **do not** send `authenticate(cached_token)`. The CLI has nothing to load; the RPC waits 12s, retries once after a no-op re-sync, then soft-fails (~24s of ERROR logs) while the workbench still opens idle. This is **not** the #528 “logged in but agent-home missing token” path — that still authenticates, re-syncs `~/.grok` → agent-home, and retries once. An official API key / keychain key is not a cached token and must not trigger this RPC.
 
+### Auth mirror heal (independent mode)
+
+Login writes **`~/.grok/auth.json`**. Independent mode also mirrors into App `agent-home/auth.json` via `sync_cli_auth_to_agent_home`.
+
+If a CLI subprocess deletes `~/.grok/auth.json` (AuthManager “scope removed / file deleted”) while the agent-home mirror is still signed-in, Host must:
+
+1. **Read** login + billing token from the best of: `$GROK_HOME/auth.json` (if present) · `~/.grok/auth.json` · App `agent-home/auth.json`
+2. **Heal**: copy agent-home → `~/.grok/auth.json` when canonical is missing and the mirror is signed-in
+
+Otherwise the UI shows signed-out / skips `cached_token` even though independent-mode agents still hold credentials.
+
 ### Warm process recycle after auth change
 
 Syncing the file is not enough while multi-session **parked** / **prewarm** CLI processes still hold credentials loaded at spawn time. Connect prefers a Ready prewarm when policy/effort/route match.
@@ -42,7 +54,7 @@ Syncing the file is not enough while multi-session **parked** / **prewarm** CLI 
 | Event | Host action |
 |-------|-------------|
 | Login success | `prepare_route_auth_for_agent` (official sync / custom clear) + `recycle_all_agents(..., "account_auth")` |
-| Logout | clear agent-home auth + `recycle_all_agents(..., "account_auth")` |
+| Logout | always wipe `~/.grok/auth.json`, agent-home, and `agent-home-official` (even if `grok logout` exits 0) + `recycle_all_agents(..., "account_auth")` |
 | Multi-account switch | snapshot → `~/.grok/auth.json` + `prepare_route_auth_for_agent` + `recycle_all_agents(..., "account_auth")` |
 | Provider route activate | `prepare_route_auth_for_agent` + `recycle_all_agents(..., "provider_route")` |
 
@@ -52,7 +64,8 @@ Syncing the file is not enough while multi-session **parked** / **prewarm** CLI 
 
 | Failure mode | Fix |
 |--------------|-----|
-| agent-home empty/stale after custom route, UI reads it as signed-out | `read_auth_profile` prefers **better** of agent-home vs `~/.grok` (signed-in → refresh → not expired → canonical) |
+| agent-home empty/stale after custom route, UI reads it as signed-out | `read_auth_profile` prefers **better** of `$GROK_HOME` / `~/.grok` / App agent-home (signed-in → refresh → not expired) |
+| `~/.grok/auth.json` wiped but agent-home mirror still signed-in | Rank mirrors for status + token; heal by copying agent-home → `~/.grok` |
 | mtime-only sync skipped restore of good `~/.grok` over newer empty agent-home | `sync_cli_auth_to_agent_home` compares **bytes** |
 | Process reuse gate used `is_custom_provider_id(modelId)` — custom sessions store **upstream** model ids, so custom processes looked "official" and were reused after auth strip | Store `custom_route` on `AcpClient` at spawn from `active_route()`; gate uses that |
 | Warm reuse skipped `prepare_route_auth` | Connect warm path re-runs `prepare_route_auth_for_agent` before `session/load` |
@@ -193,3 +206,14 @@ All strings via `src/i18n/messages.ts` (`account.*` keys). See [i18n.md](./i18n.
 - Profile DTO never includes `key` / `refresh_token` / raw access tokens.
 - Login stdout/stderr must not be dumped to app logs if they may contain secrets.
 - Doctor / export still go through existing redact paths.
+
+
+### Pexels credential storage
+
+The Host secrets API accepts an optional `pexelsApiKey`: omitted leaves the
+existing value untouched, a blank string clears it, and a nonblank string is
+trimmed before storage. `secrets_get_masked` exposes `hasPexelsKey` only. The key
+follows the existing OS keychain/plaintext fallback policy, participates in
+migration and cache merging, and is stripped from the disk payload when the
+keychain is used. This is storage groundwork for the separate wallpaper provider
+integration; it does not add a source picker or perform a Pexels request.

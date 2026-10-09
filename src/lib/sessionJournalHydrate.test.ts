@@ -272,6 +272,78 @@ describe("hydrateSessionJournal", () => {
     expect(result.scheduledFromJournal).toBe(true);
   });
 
+  it("returns timed_out and keeps cache when sessionMessages never resolves", async () => {
+    sessionTranscriptStore.setViewingSessionId("s1");
+    sessionTranscriptStore.beginJournalLoad("s1");
+    sessionTranscriptStore.cacheSession("s1", [user("old", "cached")]);
+    sessionTranscriptStore.setMessages([user("old", "cached")]);
+
+    const result = await hydrateSessionJournal({
+      sessionId: "s1",
+      sessionScheduled: false,
+      stillThisOpen: () => true,
+      liveState: "idle",
+      loadTimeoutMs: 20,
+      io: {
+        ...ioWith([]),
+        sessionMessages: () =>
+          new Promise(() => {
+            /* never */
+          }),
+      },
+    });
+
+    expect(result.status).toBe("timed_out");
+    expect(result.painted[0]?.content).toBe("cached");
+    expect(sessionTranscriptStore.getMessages()[0]?.content).toBe("cached");
+    expect(sessionTranscriptStore.getMetaSnapshot().journalLoading).toBe(false);
+  });
+
+  it("returns failed on sessionMessages rejection while keeping cache", async () => {
+    sessionTranscriptStore.setViewingSessionId("s1");
+    sessionTranscriptStore.beginJournalLoad("s1");
+    sessionTranscriptStore.cacheSession("s1", [user("old", "cached")]);
+
+    const result = await hydrateSessionJournal({
+      sessionId: "s1",
+      sessionScheduled: false,
+      stillThisOpen: () => true,
+      liveState: "idle",
+      io: {
+        ...ioWith([]),
+        sessionMessages: async () => {
+          throw new Error("disk boom");
+        },
+      },
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.painted[0]?.content).toBe("cached");
+  });
+
+  it("aborts without timed_out when generation is already stale", async () => {
+    sessionTranscriptStore.setViewingSessionId("s1");
+    sessionTranscriptStore.beginJournalLoad("s1");
+
+    const result = await hydrateSessionJournal({
+      sessionId: "s1",
+      sessionScheduled: false,
+      stillThisOpen: () => false,
+      liveState: "idle",
+      loadTimeoutMs: 20,
+      io: {
+        ...ioWith([]),
+        sessionMessages: () =>
+          new Promise(() => {
+            /* never */
+          }),
+      },
+    });
+
+    // Timeout fires first while stillThisOpen is false → aborted path.
+    expect(result.status).toBe("aborted");
+  });
+
   it("projectJournalToChat keeps a streaming cache ahead of disk", () => {
     const out = projectJournalToChat({
       stored: [stored({ id: "a1", role: "assistant", content: "disk" })],

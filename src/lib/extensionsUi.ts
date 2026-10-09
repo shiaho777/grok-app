@@ -18,6 +18,8 @@ export type McpLike = {
   vendor?: string | null;
   compatibilityStatus?: string | null;
   enabled?: boolean;
+  fromPlugin?: boolean;
+  pluginName?: string | null;
 };
 
 /** Missing / undefined → enabled (default-on / opt-out). */
@@ -135,7 +137,11 @@ export function skillMetaLine(skill: SkillLike): string {
 
 /** Compact meta line under an MCP server name. */
 export function mcpMetaLine(server: McpLike): string {
-  return [server.transport, server.compatibilityStatus, server.vendor]
+  const plugin = (server.pluginName ?? "").trim();
+  const vendor = plugin
+    ? `plugin:${plugin}`
+    : (server.vendor ?? "").trim();
+  return [server.transport, server.compatibilityStatus, vendor]
     .map((x) => (x ?? "").trim())
     .filter(Boolean)
     .join(" · ");
@@ -284,14 +290,46 @@ export function filterPluginsByLoadState<T extends { enabled?: boolean }>(
   return plugins;
 }
 
+/** Strip one pair of matching wrapping quotes (Finder / shell paste). */
+function stripWrappingQuotes(raw: string): string {
+  const s = raw.trim();
+  if (s.length < 2) return s;
+  const first = s[0];
+  const last = s[s.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    return s.slice(1, -1).trim();
+  }
+  return s;
+}
+
+/**
+ * Convert `file://` URLs (drag / paste from Finder) to a local path.
+ * Non-file URLs return null so git https sources stay intact.
+ */
+export function fileUrlToLocalPath(raw: string): string | null {
+  const s = raw.trim();
+  if (!/^file:/i.test(s)) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "file:") return null;
+    let path = decodeURIComponent(u.pathname);
+    if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
+    return path || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Normalize `grok plugin install <source>` input (path, git URL, owner/repo).
- * Empty / whitespace → null.
+ * Empty / whitespace → null. Strips wrapping quotes and `file://` URLs.
  */
 export function normalizePluginInstallSource(
   raw: string | null | undefined,
 ): string | null {
-  const s = (raw ?? "").trim();
+  let s = stripWrappingQuotes(raw ?? "");
+  s = fileUrlToLocalPath(s) ?? s;
+  s = s.trim();
   return s ? s : null;
 }
 

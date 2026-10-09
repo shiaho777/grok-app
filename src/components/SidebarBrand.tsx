@@ -1,6 +1,6 @@
 /**
- * Sidebar top-left brand row: default Grok mark, or the active custom
- * provider brand when Appearance → “Replace brand logo” is on.
+ * Sidebar brand mark for the new-session row: default Grok mark, or the
+ * active custom provider brand when Appearance → “Replace brand logo” is on.
  *
  * Wordmark brands (DeepSeek, OpenCode) carry their own name — no extra label.
  * Icon-only brands (Volcengine Ark, Amux, Zhipu) render the mark + a text label.
@@ -76,9 +76,10 @@ export const SidebarBrand = memo(function SidebarBrand({
 
   // Preference off / no known brand: always Grok mark + "Grok" (never the
   // active provider name — that would look like a partial swap).
+  // 16px matches sidebar nav item icons (IconScheduled / IconList / …).
   return (
     <>
-      <GrokLogo size={20} />
+      <GrokLogo size={16} />
       <span className="sidebar-brand-row__label">Grok</span>
     </>
   );

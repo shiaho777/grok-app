@@ -86,6 +86,7 @@ export const deProviders = {
   "prov.presetCustom": "Benutzerdefiniert",
   "prov.preset.deepseek.blurb": "Offizielle DeepSeek-API — V4 Flash + Flash Vision Exp + Pro, Thinking low/high/xhigh/max",
   "prov.preset.openrouter.blurb": "OpenRouter — GLM-5.3 Flash via chat_completions, 1M Kontext, Vision an",
+  "prov.preset.orcarouter.blurb": "OrcaRouter — OpenAI-kompatibles Multi-Provider-Gateway, Auto Router, Vision an",
   "prov.preset.amux.blurb": "Amux-Relay — Grok 4.6 / 4.5, offizieller Effort low/medium/high/xhigh",
   "prov.preset.yunApi.blurb": "Yun API (yunyi) — Grok 4.6 / 4.5, offizieller Effort low/medium/high/xhigh",
   "prov.preset.opencodeGo.blurb": "OpenCode Zen Go — DeepSeek V4 via chat_completions (nicht Responses)",

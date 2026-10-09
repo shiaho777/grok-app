@@ -309,6 +309,16 @@ pub struct SessionMeta {
     /// `None` → inherit global `AppSettings.no_ask_user`. Soft-respawn on change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_ask_user: Option<bool>,
+    /// Optional multi-root workspace id (`workspaces.json`, #1194).
+    /// Missing on legacy sessions → single-project behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Snapshot of workspace roots at bind time (detect drift on restore).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root_snapshot: Option<String>,
+    /// Last known capability label (`context_only`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_capability: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +331,7 @@ pub struct AppSettings {
     /// Missing field deserializes as false so existing installs migrate once.
     #[serde(default)]
     pub locale_follow_system_migrated: bool,
+    #[serde(default = "default_session_data_mode")]
     pub session_data_mode: String,
     pub manual_cli_path: Option<String>,
     /// CLI launch backend: `native` (default) or `wsl` (Windows only — spawn via `wsl.exe`).
@@ -382,6 +393,12 @@ pub struct AppSettings {
     /// Passed as top-level `grok --sandbox <profile>` / `GROK_SANDBOX` at spawn.
     #[serde(default = "default_sandbox_profile")]
     pub sandbox_profile: String,
+    /// Show multi-root workspace UI (#1194). Default **true** (MVP-0 declare roots).
+    #[serde(default = "default_true")]
+    pub multi_root_workspace_enabled: bool,
+    /// Last workspace id used when starting a new chat (optional hint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_workspace_id: Option<String>,
     /// Enable Grok Build cross-session memory (`--experimental-memory` / `GROK_MEMORY=1`
     /// / `[memory] enabled`). Default **false** — experimental; when off, spawn forces
     /// `--no-memory` + `GROK_MEMORY=0` for isolation (esp. independent mode).
@@ -414,6 +431,8 @@ pub struct AppSettings {
     /// enough (soft-fail older builds).
     #[serde(default = "default_background_wait_policy")]
     pub background_wait_policy: String,
+    #[serde(default = "default_wallpaper_x_search_mode")]
+    pub wallpaper_x_search_mode: String,
     /// Seconds for `--background-wait-timeout` when policy is `timeout`.
     /// Clamped 1–3600; default 600 (CLI default when waiting).
     #[serde(default = "default_background_wait_timeout_sec")]
@@ -481,7 +500,11 @@ pub struct AppSettings {
     /// Sidebar project folders the user collapsed (ids). Missing id ⇒ expanded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sidebar_collapsed_project_ids: Vec<String>,
-    /// Sidebar “Other sessions” (orphan) section expanded. Default **true**
+    /// One-shot: crowded trees auto-collapsed once (#1230). After this, an
+    /// empty collapsed list means the user expanded every folder.
+    #[serde(default)]
+    pub sidebar_collapse_default_migrated: bool,
+    /// Sidebar Default workspace (orphan) section expanded. Default **true**
     /// (matches historical cold-start behavior). Missing field ⇒ open.
     #[serde(default = "default_true")]
     pub sidebar_other_sessions_open: bool,
@@ -629,7 +652,10 @@ pub struct AppSettings {
     /// this, restricted-network users cannot reach Grok backends at all —
     /// Windows system proxy is registry-based and never reaches child
     /// processes as env vars.
-    #[serde(default = "default_proxy_mode")]
+    #[serde(
+        default = "default_proxy_mode",
+        deserialize_with = "deserialize_proxy_mode"
+    )]
     pub proxy_mode: String,
     /// Proxy URL for `manual` mode, e.g. `http://127.0.0.1:7890`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -698,6 +724,20 @@ fn default_plan_enabled() -> bool {
     true
 }
 
+pub(crate) const WALLPAPER_X_SEARCH_MODE_RESPONSES_PREVIEW: &str = "responses_preview";
+
+pub(crate) fn normalize_wallpaper_x_search_mode(value: &str) -> &'static str {
+    if value == WALLPAPER_X_SEARCH_MODE_RESPONSES_PREVIEW {
+        WALLPAPER_X_SEARCH_MODE_RESPONSES_PREVIEW
+    } else {
+        "cli"
+    }
+}
+
+fn default_wallpaper_x_search_mode() -> String {
+    "cli".into()
+}
+
 fn default_background_wait_policy() -> String {
     "wait".into()
 }
@@ -723,7 +763,59 @@ fn default_close_to_tray() -> bool {
 }
 
 fn default_proxy_mode() -> String {
-    "system".into()
+    PROXY_MODE_SYSTEM.into()
+}
+
+pub const PROXY_MODE_SYSTEM: &str = "system";
+pub const PROXY_MODE_MANUAL: &str = "manual";
+pub const PROXY_MODE_NONE: &str = "none";
+const LEGACY_PROXY_MODE_USE: &str = "use";
+
+/// Normalize persisted / IPC proxy modes. The legacy effective-decision label
+/// `use` is only treated as Manual when a valid saved URL proves that intent;
+/// without one it safely falls back to System.
+pub fn normalize_proxy_mode(raw: &str, proxy_url: Option<&str>) -> &'static str {
+    let mode = raw.trim().to_ascii_lowercase();
+    match mode.as_str() {
+        PROXY_MODE_MANUAL | "custom" | "url" => PROXY_MODE_MANUAL,
+        PROXY_MODE_NONE | "direct" | "off" | "disabled" | "no-proxy" | "noproxy" | "no_proxy" => {
+            PROXY_MODE_NONE
+        }
+        LEGACY_PROXY_MODE_USE
+            if proxy_url
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .is_some_and(crate::proxy::is_valid_proxy_url) =>
+        {
+            PROXY_MODE_MANUAL
+        }
+        PROXY_MODE_SYSTEM | "os" | "auto" | "default" | "" => PROXY_MODE_SYSTEM,
+        _ => PROXY_MODE_SYSTEM,
+    }
+}
+
+/// Canonicalize the cross-field proxy contract after AppSettings has been
+/// deserialized. Returns true when the in-memory value changed.
+pub fn normalize_proxy_settings(settings: &mut AppSettings) -> bool {
+    let normalized = normalize_proxy_mode(&settings.proxy_mode, settings.proxy_url.as_deref());
+    if settings.proxy_mode == normalized {
+        return false;
+    }
+    settings.proxy_mode = normalized.into();
+    true
+}
+
+/// Preserve string values long enough for cross-field normalization to inspect
+/// `proxy_url`; non-string values fail closed to System.
+fn deserialize_proxy_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .unwrap_or_else(default_proxy_mode))
 }
 
 fn default_todo_gate_max_fires() -> u32 {
@@ -732,6 +824,10 @@ fn default_todo_gate_max_fires() -> u32 {
 
 fn default_locale() -> String {
     "system".into()
+}
+
+fn default_session_data_mode() -> String {
+    "shared".into()
 }
 
 impl Default for AppSettings {
@@ -767,12 +863,15 @@ impl Default for AppSettings {
             stream_stall_default_migrated: true,
             store_api_keys_in_keychain: false,
             sandbox_profile: default_sandbox_profile(),
+            multi_root_workspace_enabled: true,
+            recent_workspace_id: None,
             experimental_memory: false,
             compaction_mode: default_compaction_mode(),
             compaction_detail: default_compaction_detail(),
             two_pass_compaction_enabled: false,
             max_agent_turns: None,
             background_wait_policy: default_background_wait_policy(),
+            wallpaper_x_search_mode: default_wallpaper_x_search_mode(),
             background_wait_timeout_sec: default_background_wait_timeout_sec(),
             include_partial_messages: false,
             disable_web_search: false,
@@ -787,6 +886,7 @@ impl Default for AppSettings {
             last_session_id: None,
             last_project_id: None,
             sidebar_collapsed_project_ids: Vec::new(),
+            sidebar_collapse_default_migrated: false,
             sidebar_other_sessions_open: true,
             project_spaces: Vec::new(),
             active_project_space_id: None,
@@ -847,6 +947,9 @@ impl Default for AppSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretsFile {
+    /// Pexels wallpaper-library API credential, retained only in Host secrets.
+    #[serde(default)]
+    pub pexels_api_key: Option<String>,
     pub official_api_key: Option<String>,
     pub relay_base_url: Option<String>,
     pub relay_api_key: Option<String>,
@@ -870,6 +973,8 @@ pub struct SecretsFile {
     /// Relay API key lives in OS keychain (value not on disk).
     #[serde(default)]
     pub keychain_has_relay: bool,
+    #[serde(default)]
+    pub keychain_has_pexels: bool,
     /// Custom STT key lives in OS keychain (value not on disk).
     #[serde(default)]
     pub keychain_has_stt_custom: bool,
@@ -915,7 +1020,7 @@ fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &PathBuf) -> T {
 static LAST_STORE_QUARANTINE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Read JSON; if the file exists but is corrupt, quarantine it and return default.
-fn read_json_recover<T: for<'de> Deserialize<'de> + Default>(path: &PathBuf) -> T {
+pub(crate) fn read_json_recover<T: for<'de> Deserialize<'de> + Default>(path: &PathBuf) -> T {
     match fs::read_to_string(path) {
         Ok(s) if s.trim().is_empty() => T::default(),
         Ok(s) => match serde_json::from_str(&s) {
@@ -943,7 +1048,7 @@ pub fn take_store_quarantine() -> Option<String> {
     LAST_STORE_QUARANTINE.lock().ok().and_then(|mut g| g.take())
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let s = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     // Exclusive lock + temp rename so shared-mode / dual-instance writes do not
     // leave a half-written index (E06).
@@ -953,6 +1058,16 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 pub fn load_settings() -> AppSettings {
     let _ = ensure_app_dirs();
     let mut s: AppSettings = read_json(&settings_file());
+    // Compatibility: `use` was an effective network decision label, never a
+    // persisted settings mode. Some local snapshots nevertheless contain it.
+    // A valid saved URL is the only evidence that it represented Manual.
+    if normalize_proxy_settings(&mut s) {
+        tracing::info!(
+            "settings migration: normalized proxyMode to {}",
+            s.proxy_mode
+        );
+        let _ = write_json(&settings_file(), &s);
+    }
     // One-time: installs that already stored keys in keychain before the opt-in
     // keep keychain mode so keys remain reachable without a silent loss.
     if !s.store_api_keys_in_keychain {
@@ -1222,7 +1337,29 @@ pub fn clamp_effort_for_model(model_id: &str, effort: &str) -> String {
 
 pub fn save_settings(s: &AppSettings) -> Result<(), String> {
     let _ = ensure_app_dirs();
-    write_json(&settings_file(), s)
+    let mut normalized = s.clone();
+    normalize_proxy_settings(&mut normalized);
+    write_json(&settings_file(), &normalized)
+}
+
+/// Async-context variant of [`load_settings`]. The settings file sits behind
+/// an exclusive lock and `load_settings` may even rewrite it during one-time
+/// migrations, so async commands must not block their worker on the IO
+/// (same class as the git_status blocking-pool fix in #990).
+pub async fn load_settings_async() -> AppSettings {
+    // JoinError can only come from a panic inside load_settings itself,
+    // which already falls back to defaults on IO failure.
+    tokio::task::spawn_blocking(load_settings)
+        .await
+        .unwrap_or_default()
+}
+
+/// Async-context variant of [`save_settings`].
+pub async fn save_settings_async(s: &AppSettings) -> Result<(), String> {
+    let s = s.clone();
+    tokio::task::spawn_blocking(move || save_settings(&s))
+        .await
+        .map_err(|e| format!("settings save task failed: {e}"))?
 }
 
 /// Stable pin partition: all pinned first, then unpinned.
@@ -1276,7 +1413,7 @@ pub fn load_projects() -> Vec<Project> {
     let _ = ensure_general_workspace_dir();
     let mut list: Vec<Project> = read_json_recover(&projects_file());
     // One-shot migration: drop the temporary system:general project row and
-    // rehome its sessions to orphan (`project_id = None`) under "其他会话".
+    // rehome its sessions to orphan (`project_id = None`) under Default workspace.
     migrate_legacy_general_project(&mut list);
     let mut dirty = apply_ssh_path_health(&mut list);
     dirty |= dedup_ssh_projects_by_alias_path(&mut list);
@@ -1309,7 +1446,7 @@ pub fn general_workspace_path_string() -> Result<String, String> {
 }
 
 /// Remove legacy `system:general` from the projects list and clear those
-/// session bindings so chats appear under "其他会话".
+/// session bindings so chats appear under Default workspace.
 fn migrate_legacy_general_project(list: &mut Vec<Project>) {
     let had_row = list.iter().any(|p| p.is_legacy_general());
     if !had_row {
@@ -1826,7 +1963,7 @@ pub fn create_session(
     title: Option<String>,
     scheduled: bool,
 ) -> Result<SessionMeta, String> {
-    // Unassigned chats stay orphan (`None`) and appear under "其他会话".
+    // Unassigned chats stay orphan (`None`) and appear under Default workspace.
     // Agent cwd falls back to `{app_data}/workspaces/general` at connect time.
     let _ = ensure_general_workspace_dir();
     let project_id = project_id
@@ -1859,6 +1996,9 @@ pub fn create_session(
         fork_agent_session: false,
         fork_rewind_prompt_index: None,
         no_ask_user: None,
+        workspace_id: None,
+        workspace_root_snapshot: None,
+        workspace_capability: None,
     };
     update_sessions_index({
         let meta = meta.clone();
@@ -2126,6 +2266,22 @@ pub fn set_session_no_ask_user(id: &str, no_ask_user: Option<bool>) -> Result<Se
     })
 }
 
+/// Bind or clear a multi-root workspace on a session (#1194).
+pub fn set_session_workspace(
+    id: &str,
+    workspace_id: Option<String>,
+    workspace_root_snapshot: Option<String>,
+    workspace_capability: Option<String>,
+) -> Result<SessionMeta, String> {
+    update_session_row(id, move |s| {
+        s.workspace_id = workspace_id;
+        s.workspace_root_snapshot = workspace_root_snapshot;
+        s.workspace_capability = workspace_capability;
+        s.updated_at = Utc::now();
+        Ok(s.clone())
+    })
+}
+
 pub fn set_session_system_prompt_override(
     id: &str,
     system_prompt_override: Option<String>,
@@ -2140,7 +2296,7 @@ pub fn set_session_system_prompt_override(
 
 /// Bind (or clear) a session's project folder. Used to attach orphan / legacy
 /// chats to a project added later. Clearing (`None`) returns the chat to
-/// "其他会话"; agent cwd still uses the general workspace directory.
+/// Default workspace; agent cwd still uses the general workspace directory.
 ///
 /// Internal / fork-restore path: does **not** clear `agent_session_id` or
 /// worktree meta. User-facing sidebar/chip moves must use
@@ -2468,6 +2624,40 @@ pub fn drop_last_user_prompt_exec_index(user_prompt_count: u32) -> Option<u32> {
         1 => Some(0),
         n => Some(n - 2),
     }
+}
+
+/// Parse CLI `user prompt index out of range: X (have N)`.
+pub fn parse_agent_prompt_count_from_rewind_error(err: &str) -> Option<u32> {
+    const MARK: &str = "(have ";
+    let rest = err.split(MARK).nth(1)?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Map a Host journal user-prompt index onto the live agent session.
+///
+/// After restart, Host still lists old bubbles while the new agent session only
+/// has prompts sent since reconnect (history bootstrap is prepended onto the
+/// first of those). Host turns before that window exist only inside the blob.
+pub fn map_host_rewind_index_to_agent(
+    host_index: u32,
+    host_user_turns: u32,
+    agent_user_turns: u32,
+) -> Option<u32> {
+    if agent_user_turns == 0 {
+        return None;
+    }
+    if host_user_turns <= agent_user_turns {
+        return (host_index < agent_user_turns).then_some(host_index);
+    }
+    let first_live = host_user_turns - agent_user_turns;
+    if host_index < first_live {
+        return None;
+    }
+    Some(host_index - first_live)
 }
 
 /// Exclusive cut index: keep messages strictly before the last real user prompt.
@@ -3217,7 +3407,64 @@ pub fn save_composer_prefs(
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use std::thread;
+    use std::{
+        ffi::OsString,
+        path::{Path, PathBuf},
+        thread,
+    };
+
+    struct TempAppHome {
+        path: PathBuf,
+        previous: Option<OsString>,
+    }
+
+    impl Drop for TempAppHome {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("GROK_APP_HOME", value),
+                None => std::env::remove_var("GROK_APP_HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn with_temp_app_home<R>(label: &str, f: impl FnOnce(&Path) -> R) -> R {
+        let _lock = crate::paths::APP_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let path = std::env::temp_dir().join(format!(
+            "grok-app-{label}-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&path).expect("create isolated app home");
+        let home = TempAppHome {
+            previous: std::env::var_os("GROK_APP_HOME"),
+            path,
+        };
+        std::env::set_var("GROK_APP_HOME", &home.path);
+        ensure_app_dirs().expect("initialize isolated app home");
+        f(&home.path)
+    }
+
+    fn write_proxy_settings_fixture(mode: &str, proxy_url: Option<&str>) {
+        let mut value = serde_json::to_value(AppSettings::default()).expect("settings fixture");
+        let object = value.as_object_mut().expect("settings object");
+        object.insert("proxyMode".into(), serde_json::json!(mode));
+        match proxy_url {
+            Some(url) => {
+                object.insert("proxyUrl".into(), serde_json::json!(url));
+            }
+            None => {
+                object.remove("proxyUrl");
+            }
+        }
+        fs::write(
+            settings_file(),
+            serde_json::to_vec_pretty(&value).expect("serialize settings fixture"),
+        )
+        .expect("write settings fixture");
+    }
 
     #[test]
     fn non_plan_mode_heals_plan_default() {
@@ -3352,6 +3599,83 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn proxy_mode_legacy_use_requires_a_valid_saved_url() {
+        assert_eq!(
+            normalize_proxy_mode(" USE ", Some(" http://127.0.0.1:18080 ")),
+            PROXY_MODE_MANUAL
+        );
+        assert_eq!(
+            normalize_proxy_mode("use", Some("127.0.0.1:18080")),
+            PROXY_MODE_SYSTEM
+        );
+        assert_eq!(normalize_proxy_mode("use", None), PROXY_MODE_SYSTEM);
+        assert_eq!(normalize_proxy_mode("direct", None), PROXY_MODE_NONE);
+        assert_eq!(
+            normalize_proxy_mode("future_mode", Some("http://127.0.0.1:1")),
+            PROXY_MODE_SYSTEM
+        );
+    }
+
+    #[test]
+    fn load_settings_migrates_legacy_proxy_fixture_without_real_home() {
+        with_temp_app_home("proxy-mode-load", |_| {
+            write_proxy_settings_fixture("use", Some("http://127.0.0.1:18080"));
+
+            let loaded = load_settings();
+            assert_eq!(loaded.proxy_mode, PROXY_MODE_MANUAL);
+            assert_eq!(loaded.proxy_url.as_deref(), Some("http://127.0.0.1:18080"));
+
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(settings_file()).expect("read migrated settings"))
+                    .expect("parse migrated settings");
+            assert_eq!(persisted["proxyMode"], PROXY_MODE_MANUAL);
+
+            write_proxy_settings_fixture("use", None);
+            let no_url = load_settings();
+            assert_eq!(no_url.proxy_mode, PROXY_MODE_SYSTEM);
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(settings_file()).expect("read no-url migration"))
+                    .expect("parse no-url migration");
+            assert_eq!(persisted["proxyMode"], PROXY_MODE_SYSTEM);
+        });
+    }
+
+    #[test]
+    fn save_settings_never_persists_legacy_proxy_mode() {
+        with_temp_app_home("proxy-mode-save", |_| {
+            let settings = AppSettings {
+                proxy_mode: LEGACY_PROXY_MODE_USE.into(),
+                proxy_url: Some("http://127.0.0.1:18080".into()),
+                ..AppSettings::default()
+            };
+            save_settings(&settings).expect("save normalized settings");
+
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(settings_file()).expect("read saved settings"))
+                    .expect("parse saved settings");
+            assert_eq!(persisted["proxyMode"], PROXY_MODE_MANUAL);
+        });
+    }
+
+    #[test]
+    fn missing_session_data_mode_deserializes_shared() {
+        let raw = r#"{
+            "theme": "dark",
+            "locale": "en",
+            "manualCliPath": null,
+            "permissionPolicy": "ask",
+            "modelId": null,
+            "effort": "medium",
+            "mode": "agent",
+            "onboardingDone": true,
+            "setupSkipped": false
+        }"#;
+        let s: AppSettings =
+            serde_json::from_str(raw).expect("deserialize without sessionDataMode");
+        assert_eq!(s.session_data_mode, "shared");
     }
 
     #[test]
@@ -3868,6 +4192,9 @@ mod tests {
             fork_agent_session: false,
             fork_rewind_prompt_index: None,
             no_ask_user: None,
+            workspace_id: None,
+            workspace_root_snapshot: None,
+            workspace_capability: None,
         }
     }
 
@@ -4345,6 +4672,9 @@ mod tests {
                 fork_agent_session: false,
                 fork_rewind_prompt_index: None,
                 no_ask_user: None,
+                workspace_id: None,
+                workspace_root_snapshot: None,
+                workspace_capability: None,
             },
         );
         write_json(&sessions_index_file(), &sessions).expect("seed sessions");
@@ -4788,6 +5118,31 @@ mod tests {
         assert_eq!(drop_last_user_prompt_exec_index(0), None);
         assert_eq!(drop_last_user_prompt_exec_index(1), Some(0));
         assert_eq!(drop_last_user_prompt_exec_index(2), Some(0));
+    }
+
+    #[test]
+    fn map_host_rewind_index_skips_bootstrap_only_turns() {
+        // Combined bootstrap: 3 old host turns + 2 post-restart prompts (agent has 2).
+        assert_eq!(map_host_rewind_index_to_agent(3, 5, 2), Some(0));
+        assert_eq!(map_host_rewind_index_to_agent(4, 5, 2), Some(1));
+        assert_eq!(map_host_rewind_index_to_agent(2, 5, 2), None);
+        assert_eq!(map_host_rewind_index_to_agent(3, 5, 5), Some(3));
+        assert_eq!(map_host_rewind_index_to_agent(0, 1, 1), Some(0));
+        assert_eq!(map_host_rewind_index_to_agent(1, 2, 0), None);
+    }
+
+    #[test]
+    fn parse_agent_rewind_have_count() {
+        assert_eq!(
+            parse_agent_prompt_count_from_rewind_error(
+                "user prompt index out of range: 3 (have 2)"
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            parse_agent_prompt_count_from_rewind_error("method not found"),
+            None
+        );
     }
 
     #[test]

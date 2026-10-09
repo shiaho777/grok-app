@@ -5,11 +5,29 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
 
-use reqwest::redirect::Policy;
+use hyper::header::{
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT,
+};
 use url::Url;
+
+use crate::safe_https_client::{self, SafeHttpsError, SafeHttpsErrorKind};
 
 pub const MAX_REDIRECTS: usize = 3;
 pub const REQUEST_TIMEOUT_SECS: u64 = 60;
+const DNS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+const BROWSER_DOCUMENT_USER_AGENT: &str =
+    "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 GrokApp/WallpaperDiscovery";
+const BROWSER_DOCUMENT_ACCEPT: &str =
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
+const BROWSER_DOCUMENT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9,*;q=0.5";
+
+#[derive(Debug, Clone)]
+pub struct SafeHttpsResponse {
+    pub final_url: Url,
+    pub content_type: Option<String>,
+    pub bytes: Vec<u8>,
+}
 
 pub const OFFICIAL_SKIN_CATALOG_ID: &str = "official";
 pub const OFFICIAL_SKIN_CATALOG_URL: &str = "";
@@ -32,6 +50,13 @@ pub enum OriginPolicy {
     UserSameOrigin { catalog: Url },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SafeHttpsRequestProfile {
+    #[default]
+    Default,
+    BrowserDocument,
+}
+
 pub type ResolveFn = fn(&str) -> Result<Vec<IpAddr>, String>;
 
 pub fn default_resolve(host: &str) -> Result<Vec<IpAddr>, String> {
@@ -39,6 +64,91 @@ pub fn default_resolve(host: &str) -> Result<Vec<IpAddr>, String> {
         .to_socket_addrs()
         .map(|it| it.map(|s| s.ip()).collect())
         .map_err(|e| format!("url_blocked: dns {e}"))
+}
+
+fn validate_hop_url(raw: &str, policy: &OriginPolicy) -> Result<Url, String> {
+    let url = Url::parse(raw).map_err(|_| "url_blocked: invalid url".to_string())?;
+    if url.scheme() != "https" {
+        return Err("url_blocked: https required".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("url_blocked: userinfo not allowed".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "url_blocked: missing host".to_string())?;
+    let host_l = host.to_ascii_lowercase();
+    if host_l == "localhost" || host_l.ends_with(".localhost") {
+        return Err("url_blocked: localhost".into());
+    }
+    match policy {
+        OriginPolicy::AnyHttps => {}
+        OriginPolicy::Official => {
+            if !host_matches_official(host) {
+                return Err("url_blocked: host not on official allowlist".into());
+            }
+        }
+        OriginPolicy::UserSameOrigin { catalog } => {
+            if url.origin() != catalog.origin() {
+                return Err("url_blocked: user source must stay same origin".into());
+            }
+        }
+    }
+    Ok(url)
+}
+
+fn validate_resolved_ips(ips: Vec<IpAddr>) -> Result<(), String> {
+    if ips.is_empty() {
+        return Err("url_blocked: dns empty".into());
+    }
+    for ip in ips {
+        if is_blocked_ip(ip) {
+            return Err(format!("url_blocked: private or metadata ip {ip}"));
+        }
+    }
+    Ok(())
+}
+
+async fn check_hop_async_with<R, Fut>(
+    raw: &str,
+    policy: &OriginPolicy,
+    timeout: Duration,
+    resolve: R,
+) -> Result<Url, String>
+where
+    R: FnOnce(String, u16) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<IpAddr>, String>>,
+{
+    let url = validate_hop_url(raw, policy)?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "url_blocked: missing host".to_string())?
+        .to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+    let ips = tokio::time::timeout(timeout, resolve(host, port))
+        .await
+        .map_err(|_| "url_blocked: dns timeout".to_string())??;
+    validate_resolved_ips(ips)?;
+    Ok(url)
+}
+
+/// Validate one production fetch hop without blocking a Tokio worker on the
+/// operating system resolver. This is a safety preflight, not the transport
+/// resolution: the connector resolves and pins locally for direct, CONNECT,
+/// and socks5 routes, while an allowlisted socks5h route sends the original
+/// hostname to the proxy and cannot claim to observe the proxy's DNS answer.
+pub async fn check_hop_async(raw: &str, policy: &OriginPolicy) -> Result<Url, String> {
+    let url = validate_hop_url(raw, policy)?;
+    if safe_https_client::remote_dns_preflight_allowed(&url) {
+        return Ok(url);
+    }
+    check_hop_async_with(raw, policy, DNS_RESOLVE_TIMEOUT, |host, port| async move {
+        tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map(|addresses| addresses.map(|address| address.ip()).collect())
+            .map_err(|error| format!("url_blocked: dns {error}"))
+    })
+    .await
 }
 
 pub fn is_blocked_ip(ip: IpAddr) -> bool {
@@ -49,20 +159,60 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
 }
 
 fn is_blocked_v4(v4: Ipv4Addr) -> bool {
-    v4.is_loopback()
+    let [first, second, third, fourth] = v4.octets();
+    first == 0
+        || v4.is_loopback()
         || v4.is_private()
         || v4.is_link_local()
         || v4.is_unspecified()
         || v4.is_broadcast()
         || v4.is_documentation()
-        || v4.octets()[0] == 169 && v4.octets()[1] == 254
+        || v4.is_multicast()
+        || (first == 100 && (64..=127).contains(&second))
+        || (first == 192 && second == 0 && third == 0 && !matches!(fourth, 9 | 10))
+        || (first == 192 && second == 88 && third == 99)
+        || (first == 198 && (second == 18 || second == 19))
+        || first >= 240
 }
 
 fn is_blocked_v6(v6: Ipv6Addr) -> bool {
     if let Some(v4) = v6.to_ipv4_mapped() {
         return is_blocked_v4(v4);
     }
-    v6.is_loopback() || v6.is_unspecified() || is_ula(v6) || is_link_local_v6(v6)
+    let segments = v6.segments();
+    let is_global_unicast = segments[0] & 0xe000 == 0x2000;
+    let ietf_special = is_non_global_ietf_protocol_assignment(v6);
+    let documentation = segments[0] == 0x2001 && segments[1] == 0x0db8;
+    let six_to_four = segments[0] == 0x2002;
+    let documentation_v2 = segments[0] == 0x3fff;
+
+    v6.is_loopback()
+        || v6.is_unspecified()
+        || v6.is_multicast()
+        || is_ula(v6)
+        || is_link_local_v6(v6)
+        || !is_global_unicast
+        || ietf_special
+        || documentation
+        || six_to_four
+        || documentation_v2
+}
+
+fn is_non_global_ietf_protocol_assignment(v6: Ipv6Addr) -> bool {
+    let segments = v6.segments();
+    if segments[0] != 0x2001 || segments[1] > 0x01ff {
+        return false;
+    }
+
+    let is_port_control = segments[1] == 0x0001
+        && segments[2..7].iter().all(|segment| *segment == 0)
+        && matches!(segments[7], 1 | 2);
+    let is_amt = segments[1] == 0x0003;
+    let is_as112 = segments[1] == 0x0004 && segments[2] == 0x0112;
+    let is_orchid_v2 = (0x0020..=0x002f).contains(&segments[1]);
+    let is_drone_remote_id = (0x0030..=0x003f).contains(&segments[1]);
+
+    !(is_port_control || is_amt || is_as112 || is_orchid_v2 || is_drone_remote_id)
 }
 
 fn is_ula(v6: Ipv6Addr) -> bool {
@@ -104,53 +254,44 @@ pub fn official_configured() -> bool {
 
 /// Check one hop (first or redirect). Does not perform the HTTP request.
 pub fn check_hop(raw: &str, policy: &OriginPolicy, resolve: ResolveFn) -> Result<Url, String> {
-    let url = Url::parse(raw).map_err(|_| "url_blocked: invalid url".to_string())?;
-    if url.scheme() != "https" {
-        return Err("url_blocked: https required".into());
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("url_blocked: userinfo not allowed".into());
-    }
+    let url = validate_hop_url(raw, policy)?;
     let host = url
         .host_str()
         .ok_or_else(|| "url_blocked: missing host".to_string())?;
-    let host_l = host.to_ascii_lowercase();
-    if host_l == "localhost" || host_l.ends_with(".localhost") {
-        return Err("url_blocked: localhost".into());
-    }
     let ips = resolve(host)?;
-    if ips.is_empty() {
-        return Err("url_blocked: dns empty".into());
-    }
-    for ip in &ips {
-        if is_blocked_ip(*ip) {
-            return Err(format!("url_blocked: private or metadata ip {ip}"));
-        }
-    }
-    match policy {
-        OriginPolicy::AnyHttps => {}
-        OriginPolicy::Official => {
-            if !host_matches_official(host) {
-                return Err("url_blocked: host not on official allowlist".into());
-            }
-        }
-        OriginPolicy::UserSameOrigin { catalog } => {
-            if url.origin() != catalog.origin() {
-                return Err("url_blocked: user source must stay same origin".into());
-            }
-        }
-    }
+    validate_resolved_ips(ips)?;
     Ok(url)
 }
 
-fn client_no_redirect() -> Result<reqwest::Client, String> {
-    let builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .redirect(Policy::none())
-        .user_agent("Grok App");
-    crate::proxy::apply_to_reqwest(builder)
-        .build()
-        .map_err(|e| format!("network: {e}"))
+fn headers_for_profile(profile: SafeHttpsRequestProfile) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static(match profile {
+            SafeHttpsRequestProfile::Default => "Grok App",
+            SafeHttpsRequestProfile::BrowserDocument => BROWSER_DOCUMENT_USER_AGENT,
+        }),
+    );
+    if profile == SafeHttpsRequestProfile::BrowserDocument {
+        headers.insert(ACCEPT, HeaderValue::from_static(BROWSER_DOCUMENT_ACCEPT));
+        headers.insert(
+            ACCEPT_LANGUAGE,
+            HeaderValue::from_static(BROWSER_DOCUMENT_ACCEPT_LANGUAGE),
+        );
+        headers.insert(
+            HeaderName::from_static("upgrade-insecure-requests"),
+            HeaderValue::from_static("1"),
+        );
+    }
+    headers
+}
+
+fn transport_error(error: SafeHttpsError) -> String {
+    match error.kind() {
+        SafeHttpsErrorKind::Blocked => "url_blocked: destination rejected".into(),
+        SafeHttpsErrorKind::Timeout => "network: timeout".into(),
+        SafeHttpsErrorKind::Network => "network: request failed".into(),
+    }
 }
 
 /// Fetch bytes with hop-rechecked redirects. Writes optional dest path as a stream.
@@ -160,24 +301,52 @@ pub async fn safe_https_get(
     max_bytes: u64,
     dest: Option<&std::path::Path>,
 ) -> Result<Vec<u8>, String> {
-    safe_https_get_resolved(start, policy, max_bytes, dest, default_resolve).await
+    safe_https_get_response_profile(
+        start,
+        policy,
+        max_bytes,
+        dest,
+        SafeHttpsRequestProfile::Default,
+    )
+    .await
+    .map(|response| response.bytes)
 }
 
-pub async fn safe_https_get_resolved(
+/// Fetch a public HTML document with a fixed browser-compatible request
+/// profile. Callers cannot inject headers, credentials, cookies, or referrers.
+pub async fn safe_https_get_browser_document_response(
+    start: &str,
+    policy: OriginPolicy,
+    max_bytes: u64,
+) -> Result<SafeHttpsResponse, String> {
+    safe_https_get_response_profile(
+        start,
+        policy,
+        max_bytes,
+        None,
+        SafeHttpsRequestProfile::BrowserDocument,
+    )
+    .await
+}
+
+async fn safe_https_get_response_profile(
     start: &str,
     policy: OriginPolicy,
     max_bytes: u64,
     dest: Option<&std::path::Path>,
-    resolve: ResolveFn,
-) -> Result<Vec<u8>, String> {
-    let client = client_no_redirect()?;
-    let mut current = check_hop(start, &policy, resolve)?;
+    profile: SafeHttpsRequestProfile,
+) -> Result<SafeHttpsResponse, String> {
+    let client = safe_https_client::shared();
+    let mut current = check_hop_async(start, &policy).await?;
     for hop in 0..=MAX_REDIRECTS {
-        let resp = client
-            .get(current.as_str())
-            .send()
+        let mut resp = client
+            .get(
+                &current,
+                headers_for_profile(profile),
+                Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            )
             .await
-            .map_err(|e| format!("network: {e}"))?;
+            .map_err(transport_error)?;
         let status = resp.status();
         if status.is_redirection() {
             if hop == MAX_REDIRECTS {
@@ -185,20 +354,30 @@ pub async fn safe_https_get_resolved(
             }
             let loc = resp
                 .headers()
-                .get(reqwest::header::LOCATION)
+                .get(hyper::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| "url_blocked: redirect without location".to_string())?;
             let next = current
                 .join(loc)
                 .map_err(|_| "url_blocked: bad redirect".to_string())?;
-            current = check_hop(next.as_str(), &policy, resolve)?;
+            current = check_hop_async(next.as_str(), &policy).await?;
             continue;
         }
         if !status.is_success() {
             return Err(format!("network: http {status}"));
         }
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let content_length = resp.content_length();
+        if content_length.is_some_and(|length| length > max_bytes) {
+            return Err("too_large: download exceeds limit".into());
+        }
         let mut bytes = Vec::new();
-        let stream = resp;
         let mut writer = if let Some(p) = dest {
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| format!("disk_budget: {e}"))?;
@@ -207,10 +386,7 @@ pub async fn safe_https_get_resolved(
         } else {
             None
         };
-        use futures_util::StreamExt;
-        let mut body = stream.bytes_stream();
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| format!("network: {e}"))?;
+        while let Some(chunk) = resp.chunk().await.map_err(transport_error)? {
             if bytes.len() as u64 + chunk.len() as u64 > max_bytes {
                 return Err("too_large: download exceeds limit".into());
             }
@@ -221,7 +397,11 @@ pub async fn safe_https_get_resolved(
             }
             bytes.extend_from_slice(&chunk);
         }
-        return Ok(bytes);
+        return Ok(SafeHttpsResponse {
+            final_url: current,
+            content_type,
+            bytes,
+        });
     }
     Err("url_blocked: too many redirects".into())
 }
@@ -232,6 +412,19 @@ mod tests {
 
     fn no_dns(_: &str) -> Result<Vec<IpAddr>, String> {
         Ok(vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))])
+    }
+
+    #[test]
+    fn browser_document_profile_is_fixed_and_credential_free() {
+        let headers = headers_for_profile(SafeHttpsRequestProfile::BrowserDocument);
+        assert_eq!(headers.get(ACCEPT).unwrap(), BROWSER_DOCUMENT_ACCEPT);
+        assert_eq!(
+            headers.get(ACCEPT_LANGUAGE).unwrap(),
+            BROWSER_DOCUMENT_ACCEPT_LANGUAGE
+        );
+        assert!(headers.get(hyper::header::AUTHORIZATION).is_none());
+        assert!(headers.get(hyper::header::COOKIE).is_none());
+        assert!(headers.get(hyper::header::REFERER).is_none());
     }
 
     fn loopback_dns(_: &str) -> Result<Vec<IpAddr>, String> {
@@ -369,5 +562,120 @@ mod tests {
         let prod = src.split("#[cfg(test)]").next().unwrap();
         assert!(!prod.contains("use crate::wallpaper_source"));
         assert!(!prod.contains("wallpaper_source::"));
+    }
+
+    #[tokio::test]
+    async fn async_hop_resolution_times_out() {
+        let error = check_hop_async_with(
+            "https://skins.example/p.grokskin",
+            &OriginPolicy::AnyHttps,
+            Duration::from_millis(10),
+            |_, _| async { std::future::pending::<Result<Vec<IpAddr>, String>>().await },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, "url_blocked: dns timeout");
+    }
+
+    #[tokio::test]
+    async fn async_hop_rejects_any_non_global_resolved_address() {
+        let error = check_hop_async_with(
+            "https://skins.example/p.grokskin",
+            &OriginPolicy::AnyHttps,
+            Duration::from_secs(1),
+            |_, _| async {
+                Ok(vec![
+                    IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+                ])
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("private or metadata ip"), "{error}");
+    }
+
+    #[test]
+    fn blocks_non_global_ipv4_ranges() {
+        for raw in [
+            "0.1.2.3",
+            "100.64.0.1",
+            "100.127.255.254",
+            "192.0.0.8",
+            "192.88.99.1",
+            "198.18.0.1",
+            "198.19.255.254",
+            "224.0.0.1",
+            "239.255.255.250",
+            "240.0.0.1",
+        ] {
+            assert!(is_blocked_ip(raw.parse().unwrap()), "{raw}");
+        }
+        assert!(!is_blocked_ip("1.1.1.1".parse().unwrap()));
+        assert!(!is_blocked_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_blocked_ip("192.0.0.9".parse().unwrap()));
+        assert!(!is_blocked_ip("192.0.0.10".parse().unwrap()));
+    }
+
+    #[test]
+    fn blocks_non_global_ipv6_ranges() {
+        for raw in [
+            "::2",
+            "64:ff9b::1",
+            "100::1",
+            "2001::1",
+            "2001:2::1",
+            "2001:db8::1",
+            "2002::1",
+            "3fff::1",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+        ] {
+            assert!(is_blocked_ip(raw.parse().unwrap()), "{raw}");
+        }
+        assert!(!is_blocked_ip("2001:4860:4860::8888".parse().unwrap()));
+        assert!(!is_blocked_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn allows_global_exceptions_inside_ietf_protocol_assignments() {
+        for raw in [
+            "2001:1::1",
+            "2001:1::2",
+            "2001:3::1",
+            "2001:4:112::1",
+            "2001:20::1",
+            "2001:2f::1",
+            "2001:30::1",
+            "2001:3f::1",
+            "2001:200::1",
+        ] {
+            assert!(!is_blocked_ip(raw.parse().unwrap()), "{raw}");
+        }
+    }
+
+    #[test]
+    fn blocks_non_global_neighbors_of_ietf_exceptions() {
+        for raw in [
+            "2001:1::",
+            "2001:1::3",
+            "2001:2::1",
+            "2001:4:111::1",
+            "2001:4:113::1",
+            "2001:1f::1",
+            "2001:40::1",
+            "2001:1ff::1",
+        ] {
+            assert!(is_blocked_ip(raw.parse().unwrap()), "{raw}");
+        }
+    }
+
+    #[test]
+    fn mapped_ipv6_uses_ipv4_classification() {
+        assert!(is_blocked_ip("::ffff:100.64.0.1".parse().unwrap()));
+        assert!(!is_blocked_ip("::ffff:1.1.1.1".parse().unwrap()));
     }
 }

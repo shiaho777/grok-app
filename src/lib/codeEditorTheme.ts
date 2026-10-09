@@ -83,12 +83,17 @@ const lightHighlight = HighlightStyle.define([
 
 function chrome(mode: "dark" | "light") {
   const dark = mode === "dark";
+  // Solid plate (not color-mix / transparent): packaged WKWebView has dropped
+  // contenteditable glyphs under wallpaper frost while gutters still painted.
+  const ink = dark ? "#abb2bf" : "#383a42";
+  const gutterInk = dark ? "#5c6370" : "#9d9d9f";
+  const plate = dark ? "#0a0a0a" : "#fafafa";
   return EditorView.theme(
     {
       "&": {
         height: "100%",
-        backgroundColor: "transparent",
-        color: dark ? "#abb2bf" : "#383a42",
+        backgroundColor: plate,
+        color: ink,
         fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)",
         fontSize: "12.5px",
       },
@@ -99,19 +104,22 @@ function chrome(mode: "dark" | "light") {
       // Pad content only. CM offsets the gutter map from content
       // paddingTop — extra gutter padding drops the numbers.
       ".cm-content": {
+        color: ink,
         caretColor: dark ? "#528bff" : "#4078f2",
         padding: "4px 0",
         boxSizing: "content-box",
         fontSize: "13px",
         lineHeight: "20px",
+        minWidth: "20ch",
       },
       ".cm-line": {
+        color: ink,
         padding: "0 16px 0 12px",
         lineHeight: "20px",
       },
       ".cm-gutters": {
-        backgroundColor: "transparent",
-        color: dark ? "#5c6370" : "#9d9d9f",
+        backgroundColor: plate,
+        color: gutterInk,
         borderRight: `1px solid ${dark ? "#181a1f" : "#e5e5e6"}`,
         minWidth: "2.75rem",
         padding: "0",
@@ -131,7 +139,7 @@ function chrome(mode: "dark" | "light") {
         backgroundColor: dark
           ? "rgba(255, 255, 255, 0.04)"
           : "rgba(0, 0, 0, 0.035)",
-        color: dark ? "#abb2bf" : "#383a42",
+        color: ink,
       },
       ".cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":
         {

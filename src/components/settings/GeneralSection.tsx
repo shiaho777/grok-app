@@ -3,7 +3,6 @@
  */
 import { useEffect, useState } from "react";
 import { useSettingsModel } from "@/providers/SettingsModelContext";
-import type { SettingsViewModel } from "./types";
 
 import { Select } from "@/components/Select";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
@@ -96,7 +95,7 @@ import {
 } from "@/lib/openEditorHonesty";
 
 export function GeneralSection() {
-  const s = useSettingsModel() as SettingsViewModel & Record<string, any>;
+  const s = useSettingsModel();
   const {
     title,
     activeTab,
@@ -555,6 +554,25 @@ export function GeneralSection() {
                   {t("settings.permissionCliAdvancedHint", {
                     mode: policyToCliPermissionMode(policy),
                   })}
+                </div>
+              </div>
+              <div
+                className={
+                  "settings-row settings-row--stack" +
+                  rowHighlight("settings-anchor-multiRootWorkspace")
+                }
+                id="settings-anchor-multiRootWorkspace"
+              >
+                <div className="settings-row__text">
+                  <div className="settings-row__label">
+                    {t("settings.multiRootWorkspace")}
+                  </div>
+                  <div className="settings-row__desc">
+                    {t("settings.multiRootWorkspaceDesc")}
+                  </div>
+                  <div className="settings-row__desc">
+                    {t("settings.multiRootWorkspaceDoctorHint")}
+                  </div>
                 </div>
               </div>
               {onSandboxProfile ? (

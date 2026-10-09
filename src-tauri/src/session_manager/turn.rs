@@ -49,6 +49,7 @@ impl SessionManager {
         // those lines via parseAttachmentsFromContent for the bubble body).
         let journal_attachments = attachments.filter(|items| !items.is_empty());
         if let Some(ref atts) = journal_attachments {
+            grant_journal_attachment_paths(atts);
             journal_content = append_journal_attachment_refs(journal_content, atts);
         }
         // Note: image @path stripping + Host vision runs on the *final*
@@ -181,19 +182,17 @@ impl SessionManager {
             // Persist the user-facing turn before dispatching the prompt. A
             // failed journal write must not leave the runtime in Streaming
             // with a prompt that cannot be reconstructed after reload.
-            if let Err(e) = store::append_message(
-                &s.app_session_id,
-                ChatMessageStored {
-                    id: Uuid::new_v4().to_string(),
-                    role: "user".into(),
-                    content: journal_content.clone(),
-                    thought: None,
-                    created_at: chrono::Utc::now(),
-                    is_error: false,
-                    attachments: journal_attachments.clone(),
-                    marker: None,
-                },
-            ) {
+            let user_row = ChatMessageStored {
+                id: Uuid::new_v4().to_string(),
+                role: "user".into(),
+                content: journal_content.clone(),
+                thought: None,
+                created_at: chrono::Utc::now(),
+                is_error: false,
+                attachments: journal_attachments.clone(),
+                marker: None,
+            };
+            if let Err(e) = store::append_message(&s.app_session_id, user_row.clone()) {
                 let _ = s.fsm.end_stream();
                 s.prompt_in_flight = false;
                 crate::turn_lease::clear_lease(&s.app_session_id);
@@ -212,6 +211,14 @@ impl SessionManager {
                 s.saw_model_output = false;
                 return Err(format!("JOURNAL_WRITE_FAILED: {e}"));
             }
+            // Sidebar recency: last activity, not last click. Pin stays organizational.
+            s.meta.updated_at = user_row.created_at;
+            if let Err(e) = store::update_session_meta(&s.meta) {
+                tracing::warn!(
+                    session = %s.app_session_id,
+                    "turn-start session metadata update failed after user journal: {e}"
+                );
+            }
             Ok((
                 s.backend.clone(),
                 s.app_session_id.clone(),
@@ -220,22 +227,24 @@ impl SessionManager {
                 agent_prompt,
                 mid,
                 turn_id,
+                user_row,
             ))
         });
         drop(journal_guard);
-        let (backend, app_sid, acp, agent_sid, agent_prompt, message_id, turn_id) = match open {
-            Some(Ok(v)) => v,
-            Some(Err(e)) => {
-                self.emit_for_session(&app, &app_sid);
-                return Err(e);
-            }
-            None => {
-                return Err(format!(
-                    "{}: chat {app_sid} has no live agent process — reconnect and retry",
-                    AgentErrorCode::ConnectFailed.as_str()
-                ));
-            }
-        };
+        let (backend, app_sid, acp, agent_sid, agent_prompt, message_id, turn_id, user_row) =
+            match open {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => {
+                    self.emit_for_session(&app, &app_sid);
+                    return Err(e);
+                }
+                None => {
+                    return Err(format!(
+                        "{}: chat {app_sid} has no live agent process — reconnect and retry",
+                        AgentErrorCode::ConnectFailed.as_str()
+                    ));
+                }
+            };
         // The session slot is now in `Streaming` and owns its ACP client. Do
         // not hold the global connect/park lock while host vision or another
         // side-channel performs network/CLI work (official vision can take
@@ -251,6 +260,18 @@ impl SessionManager {
         // Push streaming state before long host side-channels so the pill stays
         // "进行中" (not "就绪") while recognizing.
         self.emit_for_session(&app, &app_sid);
+        // Mirror / other windows did not run local optimistic UI — publish the
+        // journal user row (+ stream shell id) so every client can paint it (#1001).
+        crate::mirror::fanout_event(
+            &app,
+            "session://user_message",
+            serde_json::json!({
+                "sessionId": app_sid,
+                "message": user_row,
+                "streamMessageId": message_id,
+            }),
+        );
+        crate::mirror::notify_sessions_changed(Some(&app), "turn", &app_sid);
 
         // ── Host vision (custom text-only main + @image only) ──────────────
         // Official Grok route: never Host-describe (native multimodal).
@@ -496,6 +517,8 @@ impl SessionManager {
                     // someone else's turn — recording the error there would blame
                     // the wrong chat.
                     let mut record_error = false;
+                    let mut pending_emits = Vec::new();
+                    let mut pending_persists = Vec::new();
                     mgr.with_session_mut(&turn_sid, |s| {
                         // The RPC failed, so no authoritative PromptComplete will
                         // arrive. Release the turn or the chat stays un-parkable
@@ -512,11 +535,15 @@ impl SessionManager {
                         }
                         // Skip if host already recorded a retry-exhausted error this turn.
                         if !s.provider_retry_aborted {
-                            SessionManager::record_turn_error(s, &app2, &e);
+                            pending_persists.push(PendingSessionPersist::TurnBoundary(Box::new(
+                                SessionManager::prepare_turn_error(s, &e, &mut pending_emits),
+                            )));
                             let _ = s.fsm.fail_with(e);
                             record_error = true;
                         }
                     });
+                    SessionManager::emit_stream_payloads(&app2, pending_emits);
+                    SessionManager::commit_session_persists(Some(&app2), pending_persists);
                     if record_error {
                         mgr.emit_for_session(&app2, &turn_sid);
                     }
@@ -533,6 +560,8 @@ impl SessionManager {
                     // but FSM never left Streaming — UI shows "thinking" forever
                     // while the agent turn already ended (journal may hold body).
                     let mut need_emit = false;
+                    let mut pending_emits = Vec::new();
+                    let mut pending_persists = Vec::new();
                     mgr.with_session_mut(&turn_sid, |s| {
                         // Only heal sticky *Streaming* here — leave
                         // AwaitingPermission alone (user gate still live).
@@ -548,9 +577,10 @@ impl SessionManager {
                                 s.deferred_prompt_complete = Some("end_turn".into());
                             }
                             need_emit = SessionManager::try_finish_deferred_prompt_complete(
-                                s,
-                                Some(&app2),
-                            )
+                            s,
+                            Some(&mut pending_emits),
+                            Some(&mut pending_persists),
+                        )
                             .is_some();
                         } else if sticky_streaming {
                             tracing::warn!(
@@ -562,9 +592,10 @@ impl SessionManager {
                                 s.deferred_prompt_complete = Some("end_turn".into());
                             }
                             need_emit = SessionManager::try_finish_deferred_prompt_complete(
-                                s,
-                                Some(&app2),
-                            )
+                            s,
+                            Some(&mut pending_emits),
+                            Some(&mut pending_persists),
+                        )
                             .is_some();
                             // If gates still block finish, at least drop busy so
                             // reconnect/send are not wedged forever.
@@ -573,12 +604,13 @@ impl SessionManager {
                                 && s.pending_plan_rpc_id.is_none()
                                 && s.pending_ask_user_rpc_id.is_none()
                             {
-                                // Best-effort flush so partial stream_buf is not lost
+                                // Best-effort take so partial stream_buf is not lost
                                 // when we force-end without try_finish.
-                                SessionManager::flush_pending_stream_emit_done(
-                                    s,
-                                    Some(&app2),
-                                );
+                                if let Some(p) =
+                                    SessionManager::take_pending_stream_emit_done(s)
+                                {
+                                    pending_emits.push(p);
+                                }
                                 SessionManager::maybe_flush_stream_journal(s, true, false);
                                 s.stream_buf.clear();
                                 s.stream_thought.clear();
@@ -592,6 +624,8 @@ impl SessionManager {
                             }
                         }
                     });
+                    SessionManager::emit_stream_payloads(&app2, pending_emits);
+                    SessionManager::commit_session_persists(Some(&app2), pending_persists);
                     if need_emit {
                         mgr.emit_for_session(&app2, &turn_sid);
                     }
@@ -667,6 +701,7 @@ impl SessionManager {
             .unwrap_or_else(|| text.clone());
         let attachments = attachments.filter(|items| !items.is_empty());
         if let Some(ref atts) = attachments {
+            grant_journal_attachment_paths(atts);
             journal_content = append_journal_attachment_refs(journal_content, atts);
         }
         let target = session_id.as_deref();
@@ -851,13 +886,12 @@ impl SessionManager {
             self.emit_for_session(&app, &target);
             return Ok(self.snapshot());
         }
-        let app_for_marker = app.clone();
         // Also release ask_user / plan reverse-RPCs. Leaving them set kept
         // `live_session_is_busy` true after stop, so Send/park paths stayed
         // wedged until process kill (user diag 5bda6b52).
+        let mut pending_persists = Vec::new();
         let (acp, agent_sid, pending_ask, pending_plan, pending_perm) = self
-            .with_session_mut(&target, move |s| {
-                let app = app_for_marker;
+            .with_session_mut(&target, |s| {
                 if let Some(h) = s.mock_stream.take() {
                     h.request_stop();
                 }
@@ -878,7 +912,10 @@ impl SessionManager {
                 // Journal a cancel marker so UI history is not left as user-only silence.
                 if was_busy {
                     // Shared helper: durable chip + live emit (history matches live).
-                    Self::journal_turn_cancelled(s, Some(&app), "user_stop");
+                    if let Some(boundary) = Self::prepare_journal_turn_cancelled(s, "user_stop") {
+                        pending_persists
+                            .push(PendingSessionPersist::TurnBoundary(Box::new(boundary)));
+                    }
                     if s.fsm.state() == SessionState::Streaming
                         || s.fsm.state() == SessionState::AwaitingPermission
                     {
@@ -910,6 +947,7 @@ impl SessionManager {
                 )
             })
             .ok_or("no active session")?;
+        Self::commit_session_persists(Some(&app), pending_persists);
         let had_pending_ask = pending_ask.is_some();
         if had_pending_ask {
             let _ = app.emit(

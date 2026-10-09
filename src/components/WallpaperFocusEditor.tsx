@@ -36,6 +36,10 @@ import {
   visibleRectToStageFrame,
   wallpaperVisibleRect,
 } from "@/lib/wallpaperFocus";
+import {
+  readViewportAspect,
+  watchWallpaperViewportAspect,
+} from "@/lib/wallpaperExportBake";
 
 export type WallpaperFocusEditorLabels = {
   title: string;
@@ -71,13 +75,6 @@ export type WallpaperFocusEditorProps = {
 
 type MediaSize = { w: number; h: number };
 type ClipHandle = "start" | "end" | "range";
-
-function readViewportAspect(): number {
-  if (typeof window === "undefined") return 16 / 10;
-  const w = window.innerWidth || 1280;
-  const h = window.innerHeight || 800;
-  return w / Math.max(1, h);
-}
 
 export function WallpaperFocusEditor({
   open,
@@ -144,10 +141,18 @@ export function WallpaperFocusEditor({
 
   useEffect(() => {
     if (!open) return;
-    const sync = () => setViewAspect(readViewportAspect());
-    sync();
-    window.addEventListener("resize", sync);
-    return () => window.removeEventListener("resize", sync);
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void watchWallpaperViewportAspect((aspect) => {
+      if (!disposed) setViewAspect(aspect);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
   }, [open]);
 
   useEffect(() => {

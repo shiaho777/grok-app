@@ -124,6 +124,15 @@ disabled = ["yes"]
         );
         assert!(normalize_plugin_install_source("").is_err());
         assert!(normalize_plugin_install_source("   ").is_err());
+        assert_eq!(
+            normalize_plugin_install_source("\"/tmp/my-plugin\"").unwrap(),
+            "/tmp/my-plugin"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            normalize_plugin_install_source("file:///tmp/my-plugin").unwrap(),
+            "/tmp/my-plugin"
+        );
     }
 
     #[test]

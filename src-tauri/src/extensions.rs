@@ -5,7 +5,6 @@
 //! `session/new` / `session/load`. Independent mode also mirrors `enabled`
 //! flags into agent-home `config.toml`.
 
-#![allow(dead_code)] // residual-clippy: enable-map merge helpers
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -126,6 +125,7 @@ pub fn enable_all(map: &mut HashMap<String, bool>, names: &[String]) {
 }
 
 /// Merge overlay flags into base (overlay wins). Pure helper for tests.
+#[allow(dead_code)]
 pub fn merge_enable_maps(
     base: &HashMap<String, bool>,
     overlay: &HashMap<String, bool>,
@@ -151,6 +151,7 @@ pub fn filter_enabled_mcp<'a>(
 }
 
 /// Filter skill names by App prefs (default-on).
+#[allow(dead_code)]
 pub fn filter_enabled_skill_names(names: &[String], prefs: &ExtensionsPrefs) -> Vec<String> {
     names
         .iter()
@@ -234,6 +235,7 @@ fn env_map_to_named_array(map: Option<&HashMap<String, String>>) -> Vec<Value> {
 ///
 /// Prefer [`build_acp_mcp_servers_with_opts`] on the connect path with
 /// [`McpInjectOptions::for_connect`] so OAuth network work cannot block ACP.
+#[allow(dead_code)]
 pub fn build_acp_mcp_servers(defs: &[McpServerDef], prefs: &ExtensionsPrefs) -> Value {
     build_acp_mcp_servers_with_opts(defs, prefs, McpInjectOptions::default())
 }
@@ -723,6 +725,7 @@ pub fn list_mcp_server_defs(project_cwd: Option<&str>) -> Vec<McpServerDef> {
     if defs.is_empty() {
         defs = fetch_mcp_from_inspect(project_cwd);
     }
+    defs = crate::plugin_mcp::merge_plugin_mcp_defs(defs);
 
     if let Ok(mut guard) = MCP_CACHE.lock() {
         *guard = Some(McpCache {
@@ -1328,8 +1331,11 @@ pub fn build_session_mcp_servers_with_opts(
         let prefs = load_prefs();
         let defs = if opts.config_only {
             // Fast path: no `grok mcp list` / version probe (connect).
+            // Still merge installed-plugin `.mcp.json` (filesystem, no CLI).
             let settings = store::load_settings();
-            load_mcp_defs_from_configs(&settings.session_data_mode)
+            crate::plugin_mcp::merge_plugin_mcp_defs(load_mcp_defs_from_configs(
+                &settings.session_data_mode,
+            ))
         } else {
             list_mcp_server_defs(project_cwd)
         };

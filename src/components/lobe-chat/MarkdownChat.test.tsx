@@ -13,8 +13,14 @@ import {
   MarkdownChat,
 } from "./MarkdownChat";
 import { MARKDOWN_REHYPE_PLUGINS, MARKDOWN_REMARK_PLUGINS } from "@/lib/markdownMath";
+import { FILE_PATH_CARD_BASENAME_STORAGE_KEY } from "@/lib/filePathCardPref";
+import { resetFilePathResolveCacheForTests } from "@/lib/filePathResolveCache";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.removeItem(FILE_PATH_CARD_BASENAME_STORAGE_KEY);
+  resetFilePathResolveCacheForTests();
+});
 
 describe("MarkdownChat", () => {
   it("keeps a stable remarkPlugins array", () => {
@@ -84,5 +90,40 @@ describe("MarkdownChat", () => {
     );
     expect(block).toContain("katex");
     expect(block).toContain("katex-display");
+  });
+
+  it("routes mermaid fences to MermaidBlock chrome", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownChat>
+        {"```mermaid\nflowchart LR\n  A-->B\n```"}
+      </MarkdownChat>,
+    );
+    expect(html).toContain("chat-mermaid");
+    expect(html).toContain("flowchart LR");
+  });
+
+  it("does not put a pathMap absolute on the chip when as-written is on", () => {
+    resetFilePathResolveCacheForTests();
+    window.localStorage.setItem(FILE_PATH_CARD_BASENAME_STORAGE_KEY, "0");
+    const written = "src/lib/filePathCardPref.ts";
+    const abs =
+      "/Users/yangzongru/Documents/CodeGitHub/grok-app/src/lib/filePathCardPref.ts";
+    const html = renderToStaticMarkup(
+      <MarkdownChat
+        projectPath="/Users/yangzongru/Documents/CodeGitHub/grok-app"
+        imagePathMap={{ [written]: abs }}
+      >
+        {`See \`${written}\`.`}
+      </MarkdownChat>,
+    );
+    expect(html).toContain("file-path-card");
+    expect(html).toMatch(
+      new RegExp(
+        `file-path-card__name[^>]*>${written.replace(/\./g, "\\.")}<`,
+      ),
+    );
+    expect(html).not.toMatch(
+      /file-path-card__name[^>]*>\/Users\/yangzongru/,
+    );
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Pointer-drag a sidebar session onto a project folder (or Other sessions),
+ * Pointer-drag a sidebar session onto a project folder (or Default workspace),
  * or onto the composer to attach it as chat context.
  *
  * Chrome is pure DOM — no React setState during the gesture — so VirtualList
@@ -14,8 +14,16 @@ import {
   sessionIdsForDrag,
 } from "@/lib/sessionMoveProject";
 
-/** Click jitter on trackpads often exceeds 8px; only a real drag should arm. */
-export const SESSION_DRAG_THRESHOLD_PX = 16;
+/**
+ * Vertical distance a press must travel before a session move drag arms.
+ * Click jitter on trackpads often exceeds 8px; only a real pull should arm.
+ */
+export const SESSION_DRAG_VERTICAL_THRESHOLD_PX = 16;
+/**
+ * Horizontal wander allowed while pulling vertically. Rows live in a vertical
+ * list, so a sideways swipe or trackpad jitter must never arm a move.
+ */
+export const SESSION_DRAG_MAX_HORIZONTAL_PX = 10;
 /** First pointermove after down is often a synthetic jump; rebase, don't arm. */
 export const SESSION_DRAG_HOLD_MS = 80;
 
@@ -50,7 +58,10 @@ export function isSessionMoveIgnoredTarget(target: EventTarget | null): boolean 
 }
 
 export function isPastSessionDragThreshold(dx: number, dy: number): boolean {
-  return Math.hypot(dx, dy) >= SESSION_DRAG_THRESHOLD_PX;
+  return (
+    Math.abs(dx) < SESSION_DRAG_MAX_HORIZONTAL_PX &&
+    Math.abs(dy) >= SESSION_DRAG_VERTICAL_THRESHOLD_PX
+  );
 }
 
 /** First click after the pet stole key is a select, not a drag. */
@@ -68,11 +79,18 @@ export function sessionDragArmDecision(input: {
   activationDuring?: boolean;
 }): SessionDragArm {
   if (input.buttons === 0) return "ignore";
-  if (!isPastSessionDragThreshold(input.dx, input.dy)) return "ignore";
+
+  // Early in the press the first pointermove is often a synthetic jump in any
+  // direction (WKWebView / activation remap). Re-anchor on a sizeable move so
+  // it can neither arm nor poison a later vertical pull.
   if (input.activationDuring || input.elapsedMs < SESSION_DRAG_HOLD_MS) {
-    return "rebase";
+    return Math.hypot(input.dx, input.dy) >= SESSION_DRAG_VERTICAL_THRESHOLD_PX
+      ? "rebase"
+      : "ignore";
   }
-  return "arm";
+
+  // Only a deliberate vertical pull arms; horizontal wander keeps it a click.
+  return isPastSessionDragThreshold(input.dx, input.dy) ? "arm" : "ignore";
 }
 
 /** Prefer composer attach over project-move when both appear in the hit stack. */

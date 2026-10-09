@@ -42,6 +42,7 @@ const tStub = (key: string) => {
     "shortcuts.copyLastReply": "Copy last reply",
     "shortcuts.toggleSidebar": "Toggle sidebar",
     "shortcuts.sidebarSessionNav": "Next / previous chat in sidebar",
+    "shortcuts.recentSessionMru": "Next / previous recently used chat",
     "shortcuts.settings": "Settings",
     "shortcuts.help": "Keyboard shortcuts",
     "shortcuts.doctor": "Doctor",
@@ -122,6 +123,21 @@ describe("shortcuts catalog", () => {
     expect(row!.win.toLowerCase()).toMatch(/j/);
     expect(
       (GLOBAL_MOD_SHORTCUT_IDS as readonly string[]).includes("sidebarSessionNav"),
+    ).toBe(false);
+  });
+
+  it("lists Ctrl+Tab recently used chats on every OS (display-only)", () => {
+    const row = SHORTCUTS.find((s) => s.id === "recentSessionMru");
+    expect(row).toBeDefined();
+    expect(row!.labelKey).toBe("shortcuts.recentSessionMru");
+    expect(row!.group).toBe("navigation");
+    expect(row!.mac).toMatch(/⌃/);
+    expect(row!.mac.toLowerCase()).toMatch(/tab/);
+    expect(row!.win.toLowerCase()).toMatch(/ctrl/);
+    expect(row!.win.toLowerCase()).toMatch(/tab/);
+    expect(row!.mac).not.toMatch(/⌘/);
+    expect(
+      (GLOBAL_MOD_SHORTCUT_IDS as readonly string[]).includes("recentSessionMru"),
     ).toBe(false);
   });
 
@@ -301,10 +317,16 @@ describe("matchGlobalShortcut", () => {
     ).toBe("toggleSidebar");
   });
 
-  it("allows find/search/help/doctor/copy/live/sidebar/side-pane while typing", () => {
+  it("allows find/newChat/settings/search/help/doctor/copy/live/sidebar/side-pane while typing", () => {
     expect(
       matchGlobalShortcut(chord({ key: "f", typing: true }), noRemaps),
     ).toBe("findInChat");
+    expect(
+      matchGlobalShortcut(chord({ key: "n", typing: true }), noRemaps),
+    ).toBe("newChat");
+    expect(
+      matchGlobalShortcut(chord({ key: ",", typing: true }), noRemaps),
+    ).toBe("settings");
     expect(
       matchGlobalShortcut(chord({ key: "k", typing: true }), noRemaps),
     ).toBe("search");
@@ -341,28 +363,6 @@ describe("matchGlobalShortcut", () => {
     expect(
       matchGlobalShortcut(chord({ key: "`", typing: true }), noRemaps),
     ).toBe("sideTerminal");
-  });
-
-  it("skips newChat and settings while typing", () => {
-    expect(
-      matchGlobalShortcut(chord({ key: "n", typing: true }), noRemaps),
-    ).toBeNull();
-    expect(
-      matchGlobalShortcut(chord({ key: ",", typing: true }), noRemaps),
-    ).toBeNull();
-  });
-
-  it("matches settings while typing when settings are already open", () => {
-    expect(
-      matchGlobalShortcut(chord({ key: ",", typing: true }), noRemaps, {
-        settingsOpen: true,
-      }),
-    ).toBe("settings");
-    expect(
-      matchGlobalShortcut(chord({ key: "n", typing: true }), noRemaps, {
-        settingsOpen: true,
-      }),
-    ).toBeNull();
   });
 
   it("does not match without mod", () => {
@@ -407,6 +407,7 @@ describe("matchGlobalShortcut", () => {
       "stop",
       "dictation",
       "sidebarSessionNav",
+      "recentSessionMru",
       "quit",
       "zoomIn",
       "zoomOut",

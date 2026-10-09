@@ -162,6 +162,7 @@ export function formatPluginValidateMessages(
 export function isLocalPluginPath(raw: string | null | undefined): boolean {
   const s = (raw ?? "").trim();
   if (!s) return false;
+  if (/^file:/i.test(s)) return true;
   if (s.startsWith("git@") || s.includes("://")) return false;
   // Absolute / home / relative / Windows drive
   if (

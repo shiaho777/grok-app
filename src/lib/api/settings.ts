@@ -8,6 +8,7 @@ import {
 export type ComposerPrefsScope = "global" | "project" | "session";
 
 export interface AppSettings {
+  wallpaperXSearchMode?: string;
   theme: string;
   locale: string;
   sessionDataMode: string;
@@ -61,6 +62,10 @@ export interface AppSettings {
    * Default "off". Passed as `grok --sandbox <profile>` / GROK_SANDBOX on spawn.
    */
   sandboxProfile?: string;
+  /** Show multi-root workspace UI (#1194). Default true. */
+  multiRootWorkspaceEnabled?: boolean;
+  /** Last workspace id hint for new chats. */
+  recentWorkspaceId?: string | null;
 
   maxAgentTurns?: number | null;
   /**
@@ -176,8 +181,10 @@ export interface AppSettings {
   lastProjectId?: string | null;
   /** Sidebar project folder ids the user collapsed (missing ⇒ expanded). */
   sidebarCollapsedProjectIds?: string[];
+  /** One-shot crowded-tree auto-collapse (#1230). After true, empty = expand all. */
+  sidebarCollapseDefaultMigrated?: boolean;
   /**
-   * Sidebar “Other sessions” section expanded. Default true (open).
+   * Sidebar Default workspace section expanded. Default true (open).
    * Missing / undefined ⇒ open (legacy installs before this pref).
    */
   sidebarOtherSessionsOpen?: boolean;
@@ -226,6 +233,12 @@ export interface AppSettings {
   notifyOnTurnDone?: boolean;
   /** Desktop notification when the agent requests permission (default true). */
   notifyOnPermission?: boolean;
+  /** Outbound route: system | manual | none. */
+  proxyMode?: string;
+  /** Proxy URL used by Manual mode. */
+  proxyUrl?: string | null;
+  /** Comma-separated hosts bypassing the proxy. */
+  proxyNoProxy?: string | null;
   /**
    * Allow CLI install when the mirror has no published SHA-256 (default false).
    * Mismatch always fails. Prefer fixing the mirror over enabling this.
@@ -317,7 +330,7 @@ export async function composerPrefsSet(body: {
 }
 
 export async function settingsSet(settings: Record<string, unknown>) {
-  return invoke("settings_set", { settings });
+  return invoke<AppSettings>("settings_set", { settings });
 }
 
 /** Update live Host permission policy + persist at configured prefs scope. */
@@ -350,6 +363,7 @@ export async function secretsGetMasked() {
   return invoke<{
     hasOfficialKey: boolean;
     hasRelayKey: boolean;
+    hasPexelsKey: boolean;
     hasSttCustomKey: boolean;
     /** Per-provider-preset custom STT key presence (ADR-0001). */
     sttCustomKeys?: Record<string, boolean>;
@@ -362,6 +376,7 @@ export async function secretsSet(body: {
   officialApiKey?: string;
   relayBaseUrl?: string;
   relayApiKey?: string;
+  pexelsApiKey?: string;
   defaultModel?: string;
   sttCustomApiKey?: string;
   /** Provider preset id the custom STT key belongs to (ADR-0001). */
@@ -371,6 +386,7 @@ export async function secretsSet(body: {
     officialApiKey: body.officialApiKey ?? null,
     relayBaseUrl: body.relayBaseUrl ?? null,
     relayApiKey: body.relayApiKey ?? null,
+    pexelsApiKey: body.pexelsApiKey ?? null,
     defaultModel: body.defaultModel ?? null,
     sttCustomApiKey: body.sttCustomApiKey ?? null,
     sttCustomApiKeyProvider: body.sttCustomApiKeyProvider ?? null,

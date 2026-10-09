@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyInterjection,
+  applyRemoteUserMessage,
   applyStreamChunk,
   buildSegmentsFromLegacy,
   canSend,
@@ -24,6 +25,8 @@ import {
   endIndexThroughUserPrompt,
   canRewindToUserPrompt,
   rewindKeepPromptIndex,
+  rewindKeepPromptIndexFromCount,
+  resolveRewindKeepForUserMessage,
   rewindComposerRestore,
   userPromptIndexOf,
   userPromptIndexContaining,
@@ -212,6 +215,36 @@ describe("session projection", () => {
     expect(rewindKeepPromptIndex(msgs, 0)).toBe(0);
     expect(rewindKeepPromptIndex(msgs, 1)).toBe(0);
     expect(rewindKeepPromptIndex(msgs.slice(0, 3), 0)).toBe(null);
+    expect(rewindKeepPromptIndexFromCount(0, 5)).toBe(0);
+    expect(rewindKeepPromptIndexFromCount(4, 5)).toBe(3);
+    expect(rewindKeepPromptIndexFromCount(0, 1)).toBe(null);
+    expect(rewindKeepPromptIndexFromCount(3, 2)).toBe(null);
+  });
+
+  it("resolveRewindKeepForUserMessage prefers disk points after restart", async () => {
+    const msgs: ChatMessage[] = [
+      { id: "old-1", role: "user", content: "old" },
+      { id: "old-2", role: "user", content: "older" },
+      { id: "u-new", role: "user", content: "continue" },
+    ];
+    const missing = await resolveRewindKeepForUserMessage({
+      messageId: "old-1",
+      messages: msgs,
+      loadPoints: async () => [
+        { promptIndex: 0, messageId: "blob" },
+        { promptIndex: 1, messageId: "u-new" },
+      ],
+    });
+    expect(missing.reason).toBe("unavailable");
+    const hit = await resolveRewindKeepForUserMessage({
+      messageId: "u-new",
+      messages: msgs,
+      loadPoints: async () => [
+        { promptIndex: 0, messageId: "blob" },
+        { promptIndex: 1, messageId: "u-new" },
+      ],
+    });
+    expect(hit).toEqual({ keep: 0, reason: "ok" });
   });
 
   it("rewindComposerRestore puts the discarded user prompt back for edit", () => {
@@ -796,6 +829,219 @@ describe("session projection", () => {
     const out = reconcileOptimisticDuplicates(msgs);
     expect(out.map((m) => m.id)).toEqual(["uuid-user", "uuid-asst"]);
     expect(out[0]!.role).toBe("user");
+  });
+
+  it("reconcileOptimisticDuplicates matches image send when journal dual-wrote @path", () => {
+    const shot =
+      "/Users/me/Library/Application Support/com.grokapp.grok-app/attachments/paste/shot.png";
+    const body =
+      "Grok-app有个新发现的bug，带图片的prompt好像有的时候会有个重复的出现";
+    const att = { path: shot, name: "shot.png", isDir: false };
+    const msgs: ChatMessage[] = [
+      {
+        id: "u-1757088205000",
+        role: "user",
+        content: body,
+        attachments: [att],
+      },
+      {
+        id: "a-pending-1757088205000",
+        role: "assistant",
+        content: "",
+        streaming: true,
+      },
+      {
+        id: "9a5ea6bf-22b7-443f-ba90-8522011d9642",
+        role: "user",
+        content: `${body}\n\n@${shot}`,
+        attachments: [att],
+      },
+    ];
+    const out = reconcileOptimisticDuplicates(msgs);
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]!.id).toBe("9a5ea6bf-22b7-443f-ba90-8522011d9642");
+    expect(users[0]!.content).toBe(body);
+    expect(users[0]!.content.includes("@/")).toBe(false);
+    expect(users[0]!.attachments?.map((a) => a.path)).toEqual([shot]);
+    expect(out.some((m) => m.id.startsWith("a-pending-"))).toBe(true);
+  });
+
+  it("preferSessionMessages drops optimistic image prompt when disk has @path dual-write", () => {
+    const shot = "/tmp/paste.png";
+    const body = "see this screenshot";
+    const att = { path: shot, name: "paste.png", isDir: false };
+    const cached: ChatMessage[] = [
+      {
+        id: "u-1710000000002",
+        role: "user",
+        content: body,
+        attachments: [att],
+      },
+      {
+        id: "a-pending-1710000000002",
+        role: "assistant",
+        content: "",
+        streaming: true,
+      },
+    ];
+    const stored: ChatMessage[] = [
+      {
+        id: "host-user-uuid",
+        role: "user",
+        content: `${body}\n\n@${shot}`,
+        attachments: [att],
+      },
+    ];
+    const out = preferSessionMessages(cached, stored);
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]!.id).toBe("host-user-uuid");
+    expect(users[0]!.content).toBe(body);
+  });
+
+  it("applyInterjection strips dual-written @path from steer-with-image", () => {
+    const shot = "/tmp/guide.png";
+    const messages = applyInterjection(
+      [
+        { id: "u1", role: "user", content: "look" },
+        { id: "a1", role: "assistant", content: "Working", streaming: true },
+      ],
+      {
+        id: "i1",
+        role: "user",
+        content: `用这个图片\n\n@${shot}`,
+        marker: "interjection",
+        attachments: [{ path: shot, name: "guide.png", isDir: false }],
+      },
+      "host-post",
+    );
+    const steer = messages.find((m) => m.id === "i1");
+    expect(steer?.content).toBe("用这个图片");
+    expect(steer?.content.includes("@/")).toBe(false);
+    expect(steer?.attachments?.map((a) => a.path)).toEqual([shot]);
+  });
+
+  it("applyRemoteUserMessage appends mirror user + live shell (#1001)", () => {
+    const out = applyRemoteUserMessage(
+      [],
+      { id: "host-user", role: "user", content: "from phone" },
+      "host-stream",
+    );
+    expect(out.map((m) => m.id)).toEqual(["host-user", "host-stream"]);
+    expect(out[1]!.streaming).toBe(true);
+  });
+
+  it("applyRemoteUserMessage reconciles optimistic u-<ts> without duplicating", () => {
+    const out = applyRemoteUserMessage(
+      [
+        { id: "u-1710000000001", role: "user", content: "hello" },
+        { id: "a-pending-1", role: "assistant", content: "", streaming: true },
+      ],
+      { id: "host-user", role: "user", content: "hello" },
+      "host-stream",
+    );
+    expect(out.map((m) => m.id)).toEqual(["host-user", "a-pending-1"]);
+    expect(out.filter((m) => m.role === "user")).toHaveLength(1);
+  });
+
+  it("applyRemoteUserMessage reconciles text + image when host dual-wrote @path", () => {
+    const shot = "/tmp/paste.png";
+    const body = "帮我看一下怎么操作，才能接入telegram";
+    const att = { path: shot, name: "paste.png", isDir: false };
+    const out = applyRemoteUserMessage(
+      [
+        {
+          id: "u-1710000000002",
+          role: "user",
+          content: body,
+          attachments: [att],
+        },
+        { id: "a-pending-2", role: "assistant", content: "", streaming: true },
+      ],
+      {
+        id: "host-user-2",
+        role: "user",
+        content: `${body}\n\n@${shot}`,
+        attachments: [att],
+      },
+      "host-stream-2",
+    );
+    expect(out.filter((m) => m.role === "user")).toHaveLength(1);
+    expect(out[0]!.id).toBe("host-user-2");
+    expect(out[0]!.content).toBe(body);
+    expect(out[0]!.attachments).toEqual([att]);
+    expect(out[1]!.id).toBe("a-pending-2");
+  });
+
+  it("applyRemoteUserMessage reconciles pure-image send when host dual-wrote @path", () => {
+    const shot = "/tmp/paste.png";
+    const att = { path: shot, name: "paste.png", isDir: false };
+    const out = applyRemoteUserMessage(
+      [
+        {
+          id: "u-1710000000003",
+          role: "user",
+          content: "",
+          attachments: [att],
+        },
+        { id: "a-pending-3", role: "assistant", content: "", streaming: true },
+      ],
+      {
+        id: "host-user-3",
+        role: "user",
+        content: `@${shot}`,
+        attachments: [att],
+      },
+      "host-stream-3",
+    );
+    expect(out.filter((m) => m.role === "user")).toHaveLength(1);
+    expect(out[0]!.id).toBe("host-user-3");
+    expect(out[0]!.content).toBe("");
+    expect(out[0]!.attachments).toEqual([att]);
+  });
+
+  it("applyRemoteUserMessage does not append when host row already matches (#1124 reconnect)", () => {
+    const out = applyRemoteUserMessage(
+      [
+        { id: "host-already", role: "user", content: "hello again" },
+        { id: "a-pending-r", role: "assistant", content: "", streaming: true },
+      ],
+      { id: "host-new", role: "user", content: "hello again" },
+      "host-stream-r",
+    );
+    expect(out.filter((m) => m.role === "user")).toHaveLength(1);
+    expect(out[0]!.id).toBe("host-already");
+    expect(out.map((m) => m.id)).toEqual(["host-already", "a-pending-r"]);
+  });
+
+  it("applyRemoteUserMessage finds optimistic above a pre-hydrated host twin (#1124)", () => {
+    const out = applyRemoteUserMessage(
+      [
+        { id: "u-1710000000099", role: "user", content: "ping" },
+        { id: "host-pre", role: "user", content: "other" },
+        { id: "a-pending-p", role: "assistant", content: "", streaming: true },
+      ],
+      { id: "host-ping", role: "user", content: "ping" },
+      "host-stream-p",
+    );
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(2);
+    expect(users[0]!.id).toBe("host-ping");
+    expect(users[1]!.id).toBe("host-pre");
+  });
+
+  it("applyRemoteUserMessage matches CRLF optimistic body to LF host body", () => {
+    const out = applyRemoteUserMessage(
+      [
+        { id: "u-1710000000100", role: "user", content: "line1\r\nline2" },
+        { id: "a-pending-cr", role: "assistant", content: "", streaming: true },
+      ],
+      { id: "host-cr", role: "user", content: "line1\nline2" },
+      "host-stream-cr",
+    );
+    expect(out.filter((m) => m.role === "user")).toHaveLength(1);
+    expect(out[0]!.id).toBe("host-cr");
   });
 
   it("applyStreamChunk grows assistant text once per chunk", () => {

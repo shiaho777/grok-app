@@ -194,6 +194,20 @@ export const OPENROUTER_MODELS: ProviderModelEntry[] = [
   },
 ];
 
+/**
+ * OrcaRouter OpenAI-compatible gateway. Prefixed model ids; `orcarouter/auto`
+ * picks a live cheap model per request. See https://docs.orcarouter.ai/
+ */
+export const ORCAROUTER_MODELS: ProviderModelEntry[] = [
+  { id: "orcarouter/auto", name: "Auto Router", supportsVision: true },
+  { id: "openai/gpt-4o-mini", name: "GPT-4o mini", supportsVision: true },
+  {
+    id: "google/gemini-2.5-flash",
+    name: "Gemini 2.5 Flash",
+    supportsVision: true,
+  },
+];
+
 /** Amux OpenAI-compatible relay (official Grok catalog ids). */
 export const AMUX_MODELS: ProviderModelEntry[] = [
   { id: "grok-4.6", name: "Grok 4.6", supportsVision: true },
@@ -304,6 +318,23 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     brandId: "openrouter",
     supportsVision: true,
     contextWindow: 1_048_576,
+  },
+  /**
+   * OrcaRouter unified OpenAI-compatible API. Model slugs are provider-prefixed
+   * (`orcarouter/auto`, `openai/gpt-4o-mini`, …); chat_completions — not Responses.
+   * No brand logo yet.
+   */
+  {
+    id: "orcarouter",
+    name: "OrcaRouter",
+    suggestedId: "orcarouter",
+    baseUrl: "https://api.orcarouter.ai/v1",
+    apiBackend: "chat_completions",
+    models: ORCAROUTER_MODELS,
+    efforts: GROK_CHANNEL_EFFORTS.map((e) => ({ ...e })),
+    blurbKey: "prov.preset.orcarouter.blurb",
+    apiKeyUrl: "https://orcarouter.ai/",
+    supportsVision: true,
   },
   {
     id: "amux",
@@ -443,6 +474,10 @@ function matchPreset(opts: {
     if (pid === "openrouter" || pid.startsWith("openrouter-")) {
       const or = PROVIDER_PRESETS.find((p) => p.id === "openrouter");
       if (or) return or;
+    }
+    if (pid === "orcarouter" || pid.startsWith("orcarouter-")) {
+      const orca = PROVIDER_PRESETS.find((p) => p.id === "orcarouter");
+      if (orca) return orca;
     }
     if (
       pid === "zhipu" ||

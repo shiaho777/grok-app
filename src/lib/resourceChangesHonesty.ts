@@ -200,7 +200,9 @@ export function resolveReviewEmptyState(input: {
   const visibleCount = Math.max(0, Math.floor(input.visibleCount || 0));
   const path = String(input.projectPath ?? "").trim();
 
-  if (!input.isGitProject && sessionCount === 0) {
+  // Non-git only blocks when there is truly nothing to show. Session tool
+  // edits / turn-chip pinned paths (#998) must still render without .git.
+  if (!input.isGitProject && sessionCount === 0 && fileCount === 0) {
     return {
       kind: "not_git",
       titleKey: "side.review.notGit",
