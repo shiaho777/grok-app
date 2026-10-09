@@ -844,8 +844,7 @@ pub async fn gh_pr_create(
     };
     let base_branch = match sanitize_ship_branch(base.as_deref())? {
         Some(b) => b,
-        None => git_remote_default_branch(&project)
-            .unwrap_or_else(|| "main".into()),
+        None => git_remote_default_branch(&project).unwrap_or_else(|| "main".into()),
     };
     let head_ref = if let Some(h) = head.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         if h.starts_with('-') || h.contains('\0') || h.contains('\n') {
@@ -1057,7 +1056,13 @@ mod ship_flow_tests {
         // origin/trunk at HEAD, then point origin/HEAD at it.
         let gitdir = dir.join(".git");
         crate::process_util::command("git")
-            .args(["-C", &dir_s, "update-ref", "refs/remotes/origin/trunk", "HEAD"])
+            .args([
+                "-C",
+                &dir_s,
+                "update-ref",
+                "refs/remotes/origin/trunk",
+                "HEAD",
+            ])
             .output()
             .unwrap();
         std::fs::create_dir_all(gitdir.join("refs/remotes/origin")).unwrap();
@@ -1066,10 +1071,7 @@ mod ship_flow_tests {
             b"ref: refs/remotes/origin/trunk\n",
         )
         .unwrap();
-        assert_eq!(
-            git_remote_default_branch(&dir_s).as_deref(),
-            Some("trunk")
-        );
+        assert_eq!(git_remote_default_branch(&dir_s).as_deref(), Some("trunk"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
