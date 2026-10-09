@@ -15,7 +15,7 @@ describe("vendorManualChunk", () => {
     ).toBe("xterm");
   });
 
-  it("groups TipTap / ProseMirror, not React", () => {
+  it("groups TipTap / ProseMirror, with React core in its own chunk", () => {
     expect(
       vendorManualChunk("/repo/node_modules/@tiptap/react/dist/index.js"),
     ).toBe("tiptap");
@@ -24,7 +24,39 @@ describe("vendorManualChunk", () => {
     ).toBe("tiptap");
     expect(
       vendorManualChunk("/repo/node_modules/react-dom/index.js"),
-    ).toBeUndefined();
+    ).toBe("framework");
+    expect(vendorManualChunk("/repo/node_modules/react/index.js")).toBe(
+      "framework",
+    );
+    expect(
+      vendorManualChunk("/repo/node_modules/react/jsx-runtime.js"),
+    ).toBe("framework");
+    expect(
+      vendorManualChunk("D:\\repo\\node_modules\\react-dom\\client.js"),
+    ).toBe("framework");
+    expect(
+      vendorManualChunk("/repo/node_modules/scheduler/index.js"),
+    ).toBe("framework");
+  });
+
+  it("groups CodeMirror / lezer / style-mod together", () => {
+    expect(
+      vendorManualChunk("/repo/node_modules/@codemirror/view/dist/index.js"),
+    ).toBe("codemirror");
+    expect(
+      vendorManualChunk(
+        "D:\\repo\\node_modules\\@codemirror\\language\\dist\\index.js",
+      ),
+    ).toBe("codemirror");
+    expect(
+      vendorManualChunk("/repo/node_modules/@lezer/highlight/dist/index.js"),
+    ).toBe("codemirror");
+    expect(
+      vendorManualChunk("/repo/node_modules/style-mod/src/style-mod.js"),
+    ).toBe("codemirror");
+    expect(
+      vendorManualChunk("/repo/node_modules/crelt/index.js"),
+    ).toBe("codemirror");
   });
 
   it("groups react-markdown and remark-gfm", () => {

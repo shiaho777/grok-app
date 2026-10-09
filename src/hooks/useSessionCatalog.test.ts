@@ -3,7 +3,7 @@
  *
  * Catalog list + multi-select live here. Open/new-chat live in useSessionNavigation.
  */
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import * as api from "@/lib/api";
 import {
@@ -52,11 +52,30 @@ describe("sessionSidebarSelectOrder", () => {
       "orphan",
     ]);
   });
+
+  it("puts pinned chats from any folder at the global top", () => {
+    const sessions = [
+      row({ id: "p1-old", projectId: "p1", updatedAt: "2026-01-03T00:00:00Z" }),
+      row({
+        id: "p2-pin",
+        projectId: "p2",
+        pinned: true,
+        updatedAt: "2026-01-01T00:00:00Z",
+      }),
+      row({ id: "orphan", projectId: null }),
+    ];
+    expect(
+      sessionSidebarSelectOrder(sessions, [{ id: "p1" }, { id: "p2" }]),
+    ).toEqual(["p2-pin", "p1-old", "orphan"]);
+  });
 });
 
 describe("useSessionCatalog", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("enter seeds selection; exit clears it", () => {
@@ -125,6 +144,39 @@ describe("useSessionCatalog", () => {
     });
     expect(result.current.sessions.map((s) => s.id)).toEqual(["n1"]);
     expect(api.trayRefresh).toHaveBeenCalled();
+  });
+
+  it("reloads the catalog when sessions://changed fires", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, "hasHost").mockReturnValue(true);
+    let onChanged: ((payload: { reason?: string; sessionId?: string }) => void) | undefined;
+    vi.spyOn(api, "listen").mockImplementation(async (event, handler) => {
+      if (event === "sessions://changed") {
+        onChanged = handler as typeof onChanged;
+      }
+      return () => {};
+    });
+    vi.spyOn(api, "sessionsList").mockResolvedValue([
+      {
+        id: "fresh",
+        title: "Fresh",
+        projectId: null,
+        updatedAt: "2026-01-03T00:00:00Z",
+        modelId: null,
+      },
+    ]);
+    vi.spyOn(api, "trayRefresh").mockResolvedValue(undefined as never);
+    const { result } = setup();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onChanged).toBeTypeOf("function");
+    await act(async () => {
+      onChanged?.({ reason: "turn", sessionId: "fresh" });
+      vi.advanceTimersByTime(150);
+      await Promise.resolve();
+    });
+    expect(result.current.sessions.map((s) => s.id)).toEqual(["fresh"]);
   });
 
   it("drops selection for archived sessions", () => {

@@ -13,7 +13,9 @@ import type {
 import { IDLE_SNAPSHOT } from "../session";
 import {
   SESSION_CONNECT_CLIENT_TIMEOUT_MS,
+  SESSION_STOP_CLIENT_TIMEOUT_MS,
   sessionConnectTimeoutError,
+  sessionStopTimeoutError,
   withDeadline,
 } from "../sessionConnectTimeout";
 
@@ -233,8 +235,14 @@ export async function sessionSetForkAgentSession(
 /** Stop a turn. Pass `sessionId` to stop a demoted (background) chat. */
 export async function sessionStop(
   sessionId?: string | null,
+  opts?: { timeoutMs?: number },
 ): Promise<SessionSnapshot> {
-  return invoke("session_stop", { sessionId: sessionId ?? null });
+  const budget = opts?.timeoutMs ?? SESSION_STOP_CLIENT_TIMEOUT_MS;
+  return withDeadline(
+    invoke("session_stop", { sessionId: sessionId ?? null }),
+    budget,
+    () => sessionStopTimeoutError(budget),
+  );
 }
 
 export async function sessionDisconnect(): Promise<SessionSnapshot> {
@@ -680,7 +688,7 @@ export async function sessionSetWorktree(
   });
 }
 
-/** Bind session to a project, or clear (`projectId: null`) for orphan / 其他会话. */
+/** Bind session to a project, or clear (`projectId: null`) for Default workspace. */
 export async function sessionSetProject(
   id: string,
   projectId: string | null,

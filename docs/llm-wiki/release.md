@@ -21,9 +21,10 @@
 | `package.json` | `version` |
 | `src-tauri/tauri.conf.json` | `version` |
 | `src-tauri/Cargo.toml` | `[package].version` |
-| `src/i18n/messages/*/core.ts` | `app.versionFooter` 内 `Grok vX.Y.Z`（全部 locale，与 `en` 锁步） |
 
-`scripts/release-tag.sh` 会改以上文件。Tag 格式：`v0.1.0`（`v` + semver）。
+Settings → About 的 `app.versionFooter` 用 `{version}`，构建时注入：HEAD 恰好是 `vX.Y.Z` tag（或 CI `GITHUB_REF` 指向该 tag）则显示该 tag，否则显示 short commit hash。不要把 hash 写进 `tauri.conf.json` version（NSIS / updater 仍要 semver）。
+
+`scripts/release-tag.sh` 会改以上三处清单。Tag 格式：`v0.1.0`（`v` + semver）。
 
 ## CHANGELOG 写法（强制）
 
@@ -241,12 +242,23 @@ pnpm build:win   # tauri + cargo-xwin + makensis
 
 ## 发版后检查清单
 
-- [ ] Actions `release` 四个 job 全绿（macOS-ARM64 / macOS-x64 / Windows-x64 / Linux-x64）  
-- [ ] GitHub Release 页含：两 dmg、setup.exe、portable.zip、AppImage、deb、rpm  
+**Agent 必须盯到整条 `release` 工作流结束**，不能只看 tag 已推或 mac/linux 先绿。`fail-fast: false` 时某一平台失败仍可能先挂上其它安装包，形成「Latest 缺 Windows」这类半成品（见 v0.2.32 / #1039）。
+
+- [ ] Actions `release`：**四个 Build job 全绿**（macOS-ARM64 / macOS-x64 / Windows-x64 / Linux-x64）  
+- [ ] **`Gate — all platform installers present` 全绿**（`scripts/assert-release-assets.sh`；缺 setup.exe / portable.zip 等会硬失败）  
+- [ ] `Publish SHA256SUMS + website downloads` 全绿  
+- [ ] GitHub Release 页含：两 dmg、**`*-setup.exe`、`*-portable.zip`**、AppImage、deb、rpm  
 - [ ] 同一 Release 含稳定别名（`Grok_mac_x64.dmg` / `Grok_windows_x64-setup.exe` 等）+ `downloads.json`
 - [ ] Release body 仅为该版本变更列表（无整页下载表/安装长文）  
 - [ ] README 下载链接指向 Releases（相对路径已写）  
 - [ ] 版本号与 tag 一致  
+
+本地快速核对（tag 已出包后）：
+
+```bash
+bash scripts/assert-release-assets.sh vX.Y.Z --repo RongleCat/grok-app
+gh release view vX.Y.Z --json assets --jq '[.assets[].name]'
+```
 
 失败时：
 
@@ -256,6 +268,8 @@ pnpm build:win   # tauri + cargo-xwin + makensis
 | no CHANGELOG section | 补章节后删 tag 重打 |
 | macOS 证书 import 失败 | 勿传空 `APPLE_*` secrets |
 | 前端 typecheck 挂 | 本地 `pnpm typecheck` 修后推修丁 tag 或新 patch 版 |
+| **Gate / Windows 红，Latest 缺 setup.exe** | **不要当发完。** 修编译后打新 patch（如 0.2.33）；不要只靠重跑已坏 tag（若坏在该 commit） |
+| `assert-release-assets` 报 missing | 对照日志修对应矩阵腿，再发新版本或在修好后 `workflow_dispatch` 重建同一 tag |
 
 ## 禁止事项
 

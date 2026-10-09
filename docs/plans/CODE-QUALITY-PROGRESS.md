@@ -12,7 +12,7 @@
 | Spec | `docs/plans/2026-08-01-code-quality-remediation-GOAL.md` |
 | Started | `2026-08-01` |
 | Current wave | `workbench-decomp` |
-| Current WP | `WP-W27` |
+| Current WP | `WP-W33` |
 | **FINAL** | **PASS** (honest orchestration metrics; decreasing ceilings) |
 
 ## Wave checklist
@@ -73,6 +73,12 @@
 | WP-W25 | Settings overlay nav into useSettingsNavigation | PASS | 5003a52a | 15956→15612 lines; useState 214→209; useEffect 83→81 |
 | WP-W26 | Settings prefs hydrate into useAppSettingsPrefs | PASS | aae65cf4 | 15612→15471 lines; useState 209→156 |
 | WP-W27 | Session connect + live map into useSessionConnect | PASS | aae65cf4 | 15471→15183 lines; useState 156→155; useEffect 81→80 |
+| WP-W28 | Git worktree + ship chrome into useGitWorktreeChrome | PASS |  | #1033; 15237→14416 lines; useState 154→122; useEffect 78→75 |
+| WP-W29 | Side Workbench chrome into useSideWorkbenchChrome | PASS |  | #1042; 14416→14258 lines; useState 122→116; useEffect 75→71; plan `docs/plans/2026-09-06-appworkbench-w29-side-workbench.md` |
+| WP-W30 | Session chrome badges into useSessionChromeBadges | PASS |  | main@#1050 14262→14062 lines; useState 116→113; useEffect 71→65; plan `docs/plans/2026-09-07-appworkbench-w30-session-badges.md` |
+| WP-W31 | Account / quota chrome into useAccountQuotaChrome | PASS |  | 14062→13759 lines; useState 113→104; useEffect 65→63; plan `docs/plans/2026-09-07-appworkbench-w31-account-quota.md` |
+| WP-W32 | MCP inspect + doctor into useMcpDoctorChrome | PASS |  | 13759→13714 lines; useState 104→96; useEffect 63; plan `docs/plans/2026-09-07-appworkbench-w32-mcp-doctor.md` |
+| WP-W33 | Setup/boot gate into useSetupBootGate | PASS |  | 13714→13706 lines; useState 96→90; useEffect 63→62; plan `docs/plans/2026-09-07-appworkbench-w33-setup-boot.md` |
 
 ## Metrics log (append-only)
 
@@ -111,6 +117,12 @@
 | 2026-08-24 W25 | 15612 (shell 18 + wb 15594) | 209 | 81 | 11 | dir | dir | 28 | 9 | 69 |
 | 2026-08-24 W26 | 15471 (shell 18 + wb 15453) | 156 | 81 | 11 | dir | dir | 28 | 9 | 69 |
 | 2026-08-24 W27 | 15183 (shell 18 + wb 15165) | 155 | 80 | 11 | dir | dir | 28 | 9 | 69 |
+| 2026-09-05 W28 | 14416 (shell 21 + wb 14395) | 122 | 75 | 12 | dir | dir | 29 | 9 | 80 |
+| 2026-09-06 W29 | 14258 (shell 21 + wb 14237) | 116 | 71 | 12 | dir | dir | 29 | 9 | 80 |
+| 2026-09-07 W30 | 14062 (shell 21 + wb 14041) | 113 | 65 | 12 | dir | dir | 29 | 9 | 80 |
+| 2026-09-07 W31 | 13759 (shell 21 + wb 13738) | 104 | 63 | 12 | dir | dir | 29 | 9 | 80 |
+| 2026-09-07 W32 | 13714 (shell 21 + wb 13693) | 96 | 63 | 12 | dir | dir | 29 | 9 | 80 |
+| 2026-09-07 W33 | 13706 (shell 21 + wb 13685) | 90 | 62 | 12 | dir | dir | 29 | 9 | 80 |
 
 ## Blockers
 
@@ -136,7 +148,7 @@ Parallel non-overlapping tracks (multi-agent) — **landed**:
 | residual-resource-viewer | ResourceViewer + parts | **PASS** | 4938→modules |
 | residual-i18n | `src/i18n/**` | **PASS** | domain modules + barrels |
 | residual-settings | SettingsPage + settings/* | **PASS** | 8874→1817 |
-| residual-appworkbench | AppWorkbench + hooks | **PASS** | WP-W27: settings nav/prefs + connect/live map extracted; #870 closed |
+| residual-appworkbench | AppWorkbench + hooks | **PASS** | WP-W33: setup/boot gate extracted; planned W-wave done |
 | residual-settings-catalog | settingsCatalog split | **PASS** | domain entries |
 
-Follow-on: `docs/plans/HANDOFF-appworkbench-decomposition.md`. Decreasing ceilings now **15350 / 160 useState / 83 useEffect**; `files_ge_1000` **≤77** (0.2.28 tree). #870 closed.
+Follow-on: `docs/plans/HANDOFF-appworkbench-decomposition.md`. Decreasing ceilings now **13750 / 94 useState / 65 useEffect**; `files_ge_1000` **≤80**. Planned W-wave cuts through W33 are done; `sessionChangesById` and git dirty stay on the host.

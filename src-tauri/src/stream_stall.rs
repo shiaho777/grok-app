@@ -11,7 +11,6 @@
 //! Silent heal still applies when the agent RPC already completed and Host is
 //! merely stuck in Streaming with nothing left to wait on.
 
-#![allow(dead_code)] // residual-clippy: legacy stall emit helper
 use std::time::{Duration, Instant};
 
 /// Soft silence window default (settings `streamStallSeconds`).
@@ -23,9 +22,10 @@ pub const DEFAULT_STREAM_STALL_SECONDS: u32 = 600;
 /// A dead gateway / hung `session/prompt` should offer Keep waiting / End turn
 /// (retry) well before the 10-minute default. Never auto-cancels.
 ///
-/// 90s (not 45): Grok 4.x high-effort first token commonly lands at 40–70s
-/// with no streamed CoT. 45s false-stalled those turns as a dead gateway.
-pub const PRE_FIRST_TOKEN_STALL_SECONDS: u32 = 90;
+/// 150s (not 45/90): Grok 4.x official xhigh first token commonly lands at
+/// 40–70s with no streamed CoT, and field cases still had `ttft_ms=null` at
+/// ~126s (#1215). 90s still false-stalled those turns as a dead gateway.
+pub const PRE_FIRST_TOKEN_STALL_SECONDS: u32 = 150;
 
 /// Prior product defaults (120 then 180). Used only for one-shot settings migration.
 pub const LEGACY_STREAM_STALL_SECONDS: &[u32] = &[120, 180];
@@ -77,6 +77,7 @@ pub fn effective_stall_seconds(
 
 /// Hard end silence: at least 10 minutes, or 3× soft window (whichever larger),
 /// capped at 30 minutes.
+#[allow(dead_code)]
 pub fn hard_stall_seconds(soft_seconds: u32) -> u32 {
     let soft = normalize_stream_stall_seconds(soft_seconds);
     let triple = soft.saturating_mul(3);
@@ -99,6 +100,7 @@ pub fn is_stream_stalled(last_progress: Instant, stall_seconds: u32, now: Instan
 }
 
 /// True when silence has reached the hard end window.
+#[allow(dead_code)]
 pub fn is_hard_stalled(last_progress: Instant, soft_seconds: u32, now: Instant) -> bool {
     let hard = hard_stall_seconds(soft_seconds);
     now >= last_progress + Duration::from_secs(u64::from(hard))
@@ -108,6 +110,7 @@ pub fn is_hard_stalled(last_progress: Instant, soft_seconds: u32, now: Instant) 
 ///
 /// Emits on first cross into stalled, then again every full stall window while
 /// silence continues — but only while `soft_emits_this_turn < MAX`.
+#[allow(dead_code)]
 pub fn should_emit_stall(
     last_progress: Instant,
     last_emit: Option<Instant>,
@@ -204,6 +207,7 @@ pub fn is_maybe_done_candidate(
 
 /// Deprecated name — use [`is_maybe_done_candidate`]. Kept for call-site greps.
 #[inline]
+#[allow(dead_code)]
 pub fn should_auto_end_maybe_done(
     saw_model_output: bool,
     open_tool_count: usize,
@@ -366,14 +370,14 @@ mod tests {
     fn defaults_match_spec() {
         assert_eq!(DEFAULT_STREAM_STALL_SECONDS, 600);
         assert_eq!(MIN_STREAM_STALL_SECONDS, 15);
-        assert_eq!(PRE_FIRST_TOKEN_STALL_SECONDS, 90);
+        assert_eq!(PRE_FIRST_TOKEN_STALL_SECONDS, 150);
         const { assert!(MAX_SOFT_STALL_EMITS_PER_TURN >= 8) };
         assert!(LEGACY_STREAM_STALL_SECONDS.contains(&180));
     }
 
     #[test]
     fn pre_token_uses_shorter_window() {
-        assert_eq!(effective_stall_seconds(600, false, false), 90);
+        assert_eq!(effective_stall_seconds(600, false, false), 150);
         assert_eq!(effective_stall_seconds(30, false, false), 30);
         assert_eq!(effective_stall_seconds(600, true, false), 600);
         assert_eq!(effective_stall_seconds(600, false, true), 600);

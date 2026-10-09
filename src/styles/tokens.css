@@ -43,7 +43,8 @@
   --tree-rail-pad: 10px;
   --tree-l1-gutter: var(--space-5);
   --tree-l1-gutter-touch: 44px;
-  --tree-l2-pad: var(--space-1);
+  /* Meet nav icons (~rail + 6 + 2) so project folder marks share one axis */
+  --tree-l2-pad: 8px;
   --tree-l2-icon: var(--space-4);
   --tree-l2-gap: 6px;
   --tree-text-inset: calc(

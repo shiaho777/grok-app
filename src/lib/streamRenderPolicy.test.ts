@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   CHAT_VIRTUALIZE_THRESHOLD_PERF,
-  readStreamPerfFlag,
+  isStreamPerfActive,
   resolveStreamFlushMs,
   resolveStreamMarkdownParseMs,
   resolveStreamOverscanScale,
   resolveMarkdownPaintSource,
   resolveTranscriptContentNotifyMs,
+  setStreamPerfActive,
   shouldPlayWallpaperVideo,
+  shouldSyncStreamPerfDataset,
   shouldUsePlainStreamBody,
   STREAM_COALESCE_FLUSH_MS,
   STREAM_MARKDOWN_PARSE_MS,
@@ -80,23 +82,23 @@ describe("streamRenderPolicy", () => {
     );
   });
 
-  it("reads html dataset.streamPerf", () => {
-    expect(readStreamPerfFlag(undefined)).toBe(false);
-    expect(readStreamPerfFlag({})).toBe(false);
-    expect(readStreamPerfFlag({ streamPerf: "0" })).toBe(false);
-    expect(readStreamPerfFlag({ streamPerf: "1" })).toBe(true);
-  });
-
-  it("pauses wallpaper video when hidden or stream-perf", () => {
+  it("only pauses wallpaper video while the document is hidden", () => {
     expect(shouldPlayWallpaperVideo({})).toBe(true);
     expect(shouldPlayWallpaperVideo({ visibilityState: "visible" })).toBe(true);
     expect(shouldPlayWallpaperVideo({ visibilityState: "hidden" })).toBe(false);
-    expect(shouldPlayWallpaperVideo({ streamPerf: true })).toBe(false);
-    expect(
-      shouldPlayWallpaperVideo({
-        visibilityState: "visible",
-        streamPerf: true,
-      }),
-    ).toBe(false);
+  });
+
+  it("tracks stream-perf in a module flag for overscan without requiring html attrs (#1158)", () => {
+    setStreamPerfActive(false);
+    expect(isStreamPerfActive()).toBe(false);
+    setStreamPerfActive(true);
+    expect(isStreamPerfActive()).toBe(true);
+    setStreamPerfActive(false);
+    expect(isStreamPerfActive()).toBe(false);
+  });
+
+  it("skips html data-stream-perf sync while wallpaper is active (#1158)", () => {
+    expect(shouldSyncStreamPerfDataset({ wallpaperActive: true })).toBe(false);
+    expect(shouldSyncStreamPerfDataset({ wallpaperActive: false })).toBe(true);
   });
 });

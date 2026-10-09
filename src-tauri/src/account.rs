@@ -1,10 +1,9 @@
 //! Official Grok Build account: profile, login/logout, billing snapshot, local usage.
 //!
-//! Profile is read from `~/.grok/auth.json` (tokens never leave this module).
+//! Profile is read from `~/.grok/auth.json` (tokens remain Host-only and never cross IPC).
 //! Billing is best-effort HTTP (same field shape as CLI `/usage` / billing extension).
 //! Heatmap + call logs are derived from local CLI session signals (and optional app journal).
 
-#![allow(dead_code)] // residual-clippy: billing helpers not yet wired in UI path
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -22,6 +21,12 @@ use tracing::{info, warn};
 use crate::cli_probe;
 use crate::paths;
 
+mod build_oauth;
+pub(crate) use build_oauth::{
+    build_oauth_credential_revision, read_build_oauth_access_token, BuildOauthAccessToken,
+    BuildOauthCredentialRevision, BuildOauthTokenError,
+};
+
 /// Cancellation + optional stdin for a running `grok login`.
 ///
 /// Some auth.x.ai pages show a code and ask the user to **paste it into
@@ -30,6 +35,7 @@ use crate::paths;
 pub struct LoginProcState {
     cancel: tokio::sync::Notify,
     /// Guard: only one login may run at a time.
+    #[allow(dead_code)]
     busy: tokio::sync::Mutex<bool>,
     /// Live child stdin while `account_login` is in flight (for paste-back codes).
     stdin: tokio::sync::Mutex<Option<tokio::process::ChildStdin>>,
@@ -97,6 +103,7 @@ pub async fn account_login_submit_code(code: &str) -> Result<(), String> {
 }
 use crate::store;
 
+#[allow(dead_code)]
 const BILLING_CANDIDATES: &[&str] = &[
     // Confirmed live endpoint used by Grok Build CLI billing extension.
     "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
@@ -330,6 +337,35 @@ pub fn clear_agent_home_auth() {
     }
 }
 
+fn official_aux_auth_json_path() -> PathBuf {
+    crate::official_aux::official_aux_home().join("auth.json")
+}
+
+/// Local credential files Sign out must delete even when `grok logout` exits 0
+/// without wiping them (expired OIDC, #1213).
+fn logout_auth_paths() -> Vec<PathBuf> {
+    let mut out = vec![
+        auth_json_path(),
+        cli_default_auth_json_path(),
+        agent_home_auth_json_path(),
+        official_aux_auth_json_path(),
+    ];
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn wipe_local_auth_files() {
+    for p in logout_auth_paths() {
+        if p.is_file() {
+            match fs::remove_file(&p) {
+                Ok(()) => info!("account: wiped {}", p.display()),
+                Err(e) => warn!("account: failed to wipe {}: {e}", p.display()),
+            }
+        }
+    }
+}
+
 fn sessions_root() -> PathBuf {
     grok_home().join("sessions")
 }
@@ -362,21 +398,75 @@ fn usage_cache_path() -> PathBuf {
 
 /// Redacted profile from CLI auth.json. Never returns tokens.
 pub fn read_auth_profile() -> AccountProfile {
-    let primary = auth_json_path();
-    let canonical = cli_default_auth_json_path();
-    // Prefer a *signed-in* profile. `$GROK_HOME/auth.json` after a custom-route
-    // clear can parse as well-formed signed-out and must not mask a still-valid
-    // `~/.grok/auth.json` (#525 multi-project "re-login" false positive).
-    //
-    // Also prefer canonical when agent-home is expired/stale but `~/.grok` still
-    // has a usable login (#528 intermittent re-login after project switch).
-    let primary_prof = read_auth_profile_at(&primary);
-    let canonical_prof = if primary != canonical {
-        read_auth_profile_at(&canonical)
-    } else {
-        None
+    let profile = prefer_auth_profile_among(auth_profile_candidates());
+    // Independent mode keeps a mirror under App agent-home. If a CLI subprocess
+    // wiped `~/.grok/auth.json` but the mirror is still signed-in, restore the
+    // canonical file so Host + terminal CLI agree again.
+    let _ = heal_cli_auth_from_agent_home_if_needed();
+    profile
+}
+
+/// Candidate auth.json paths for Host login/billing reads (best wins).
+fn auth_json_candidate_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let push = |v: &mut Vec<PathBuf>, p: PathBuf| {
+        if !v.iter().any(|x| x == &p) {
+            v.push(p);
+        }
     };
-    prefer_auth_profile(primary_prof, canonical_prof)
+    push(&mut out, auth_json_path());
+    push(&mut out, cli_default_auth_json_path());
+    push(&mut out, agent_home_auth_json_path());
+    out
+}
+
+fn auth_profile_candidates() -> Vec<(PathBuf, Option<AccountProfile>)> {
+    auth_json_candidate_paths()
+        .into_iter()
+        .map(|p| {
+            let prof = read_auth_profile_at(&p);
+            (p, prof)
+        })
+        .collect()
+}
+
+/// Prefer a *signed-in* profile across Host / CLI / App agent-home mirrors.
+///
+/// `$GROK_HOME/auth.json` after a custom-route clear can parse as well-formed
+/// signed-out and must not mask a still-valid `~/.grok/auth.json` (#525).
+/// Prefer canonical when agent-home is expired/stale but `~/.grok` is fine (#528).
+/// Also prefer App agent-home when `~/.grok/auth.json` was deleted but the
+/// independent-mode mirror still holds OIDC (#auth-wipe-heal).
+pub(crate) fn prefer_auth_profile_among(
+    candidates: Vec<(PathBuf, Option<AccountProfile>)>,
+) -> AccountProfile {
+    let mut best: Option<AccountProfile> = None;
+    for (_path, prof) in candidates {
+        best = Some(prefer_auth_profile(best, prof));
+    }
+    best.unwrap_or_else(signed_out_profile)
+}
+
+/// If canonical `~/.grok/auth.json` is missing but App agent-home still has a
+/// signed-in mirror, copy agent-home → canonical (best-effort).
+pub(super) fn heal_cli_auth_from_agent_home_if_needed() -> Result<(), String> {
+    let canonical = cli_default_auth_json_path();
+    if canonical.is_file() {
+        return Ok(());
+    }
+    let agent = agent_home_auth_json_path();
+    let Some(prof) = read_auth_profile_at(&agent) else {
+        return Ok(());
+    };
+    if !prof.signed_in {
+        return Ok(());
+    }
+    sync_auth_file(&agent, &canonical)?;
+    info!(
+        "account: restored ~/.grok/auth.json from agent-home mirror ({})",
+        agent.display()
+    );
+    Ok(())
 }
 
 /// Pick the better of two auth profiles (pure — unit-tested).
@@ -551,8 +641,28 @@ fn first_usable_auth_entry(v: &Value) -> Option<Value> {
     first
 }
 
+fn auth_profile_score(prof: &AccountProfile) -> (u8, u8, u8) {
+    (
+        u8::from(prof.signed_in),
+        u8::from(prof.has_refresh),
+        u8::from(!prof.expired),
+    )
+}
+
 fn read_access_token() -> Option<String> {
-    read_access_token_from_path(&auth_json_path())
+    // Match profile ranking across Host / ~/.grok / agent-home mirrors.
+    let mut best_path: Option<PathBuf> = None;
+    let mut best_score = (0u8, 0u8, 0u8);
+    for (path, prof) in auth_profile_candidates() {
+        let Some(prof) = prof else { continue };
+        let score = auth_profile_score(&prof);
+        if score > best_score || best_path.is_none() {
+            best_score = score;
+            best_path = Some(path);
+        }
+    }
+    let path = best_path.unwrap_or_else(auth_json_path);
+    read_access_token_from_path(&path)
 }
 
 /// Read OAuth access token from any `auth.json` (current CLI or multi-account snapshot).
@@ -606,6 +716,7 @@ fn save_billing_cache(b: &BillingSnapshot) {
 }
 
 /// Parse number or `{ "val": N }` money wrappers used by cli-chat-proxy billing.
+#[allow(dead_code)]
 fn json_number(v: Option<&Value>) -> Option<f64> {
     let v = v?;
     if let Some(n) = v.as_f64() {
@@ -629,6 +740,7 @@ fn json_number(v: Option<&Value>) -> Option<f64> {
     None
 }
 
+#[allow(dead_code)]
 fn parse_billing_json(v: &Value) -> BillingSnapshot {
     // Nested under data / credits / config (cli-chat-proxy uses `config`).
     let root = if v.get("creditUsagePercent").is_some() || v.get("monthlyLimit").is_some() {
@@ -979,6 +1091,7 @@ async fn fetch_subscription_meta(token: &str) -> SubscriptionMeta {
     meta
 }
 
+#[allow(dead_code)]
 async fn fetch_billing_remote(token: &str) -> BillingSnapshot {
     let client = match crate::proxy::apply_to_reqwest(reqwest::Client::builder())
         .timeout(Duration::from_secs(10))
@@ -1901,23 +2014,18 @@ pub async fn account_logout(manual_cli: Option<&str>) -> Result<AccountProfile, 
                 info!("account: grok logout ok");
             }
             Ok(st) => {
-                warn!("account: grok logout exit {st}; clearing auth.json fallback");
-                let _ = fs::remove_file(auth_json_path());
-                let _ = fs::remove_file(cli_default_auth_json_path());
+                warn!("account: grok logout exit {st}; wiping local auth anyway");
             }
             Err(e) => {
-                warn!("account: grok logout spawn failed: {e}");
-                let _ = fs::remove_file(auth_json_path());
-                let _ = fs::remove_file(cli_default_auth_json_path());
+                warn!("account: grok logout spawn failed: {e}; wiping local auth anyway");
             }
         }
     } else {
-        // No CLI — best-effort wipe of local CLI auth cache only.
-        let _ = fs::remove_file(auth_json_path());
-        let _ = fs::remove_file(cli_default_auth_json_path());
+        info!("account: no CLI on logout; wiping local auth files");
     }
-    // Always drop independent-mode copy so agent cannot keep using old tokens.
-    clear_agent_home_auth();
+    // Always wipe: `grok logout` can exit 0 while leaving expired `auth.json`
+    // (and official-aux / agent-home copies) in place (#1213).
+    wipe_local_auth_files();
 
     Ok(read_auth_profile())
 }
@@ -1931,6 +2039,7 @@ pub async fn open_subscribe() -> Result<(), String> {
 }
 
 /// Open a URL in the system browser (also used after device-code login).
+#[allow(dead_code)]
 pub fn open_browser_url(url: &str) -> Result<(), String> {
     open_url(url)
 }
@@ -1942,6 +2051,31 @@ fn open_url(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logout_auth_paths_cover_cli_agent_home_and_official_aux() {
+        let paths = logout_auth_paths();
+        let joined: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            joined
+                .iter()
+                .any(|p| p.ends_with("/.grok/auth.json") || p.ends_with("auth.json")),
+            "{joined:?}"
+        );
+        assert!(
+            joined.iter().any(|p| p.contains("agent-home-official")),
+            "missing official-aux auth: {joined:?}"
+        );
+        assert!(
+            joined
+                .iter()
+                .any(|p| p.contains("agent-home") && !p.contains("agent-home-official")),
+            "missing agent-home auth: {joined:?}"
+        );
+    }
 
     #[test]
     fn parse_billing_accepts_cli_shape() {
@@ -2137,6 +2271,36 @@ mod tests {
     #[test]
     fn prefer_auth_profile_keeps_primary_when_stronger() {
         let out = prefer_auth_profile(Some(prof(true, true, false)), Some(prof(true, false, true)));
+        assert!(out.signed_in);
+        assert!(out.has_refresh);
+        assert!(!out.expired);
+    }
+
+    #[test]
+    fn prefer_auth_profile_among_picks_agent_home_when_canonical_missing() {
+        // ~/.grok wiped; independent-mode agent-home mirror still signed in.
+        let out = prefer_auth_profile_among(vec![
+            (PathBuf::from("/tmp/missing-a"), None),
+            (PathBuf::from("/tmp/missing-b"), None),
+            (
+                PathBuf::from("/tmp/agent-home"),
+                Some(prof(true, true, false)),
+            ),
+        ]);
+        assert!(out.signed_in);
+        assert!(out.has_refresh);
+        assert!(!out.expired);
+    }
+
+    #[test]
+    fn prefer_auth_profile_among_prefers_fresh_canonical_over_expired_agent() {
+        let out = prefer_auth_profile_among(vec![
+            (PathBuf::from("/tmp/agent"), Some(prof(true, false, true))),
+            (
+                PathBuf::from("/tmp/canonical"),
+                Some(prof(true, true, false)),
+            ),
+        ]);
         assert!(out.signed_in);
         assert!(out.has_refresh);
         assert!(!out.expired);

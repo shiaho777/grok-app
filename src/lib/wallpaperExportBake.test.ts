@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_WALLPAPER_FOCUS } from "./wallpaperFocus";
 import {
+  __resetMainWindowAspectCacheForTests,
+  __setMainWindowAspectCacheForTests,
   bakedWallpaperReset,
   evenPixelCrop,
   isFullFrameCrop,
@@ -8,7 +10,34 @@ import {
   pixelCropFromFocusRaw,
   planImageBake,
   planVideoBake,
+  readViewportAspect,
 } from "./wallpaperExportBake";
+
+vi.mock("./themeEditorShell", () => ({
+  isThemeEditorDocument: vi.fn(() => false),
+}));
+
+import { isThemeEditorDocument } from "./themeEditorShell";
+
+afterEach(() => {
+  __resetMainWindowAspectCacheForTests();
+  vi.mocked(isThemeEditorDocument).mockReturnValue(false);
+});
+
+describe("readViewportAspect", () => {
+  it("uses cached main-window aspect inside the theme-editor shell", () => {
+    vi.mocked(isThemeEditorDocument).mockReturnValue(true);
+    __setMainWindowAspectCacheForTests(16 / 9);
+    expect(readViewportAspect()).toBeCloseTo(16 / 9, 5);
+  });
+
+  it("does not use the cache outside the theme-editor shell", () => {
+    vi.mocked(isThemeEditorDocument).mockReturnValue(false);
+    __setMainWindowAspectCacheForTests(16 / 9);
+    const local = readViewportAspect();
+    expect(local).not.toBeCloseTo(16 / 9, 5);
+  });
+});
 
 describe("planVideoBake", () => {
   it("skips spatial bake when the current window matches the media", () => {

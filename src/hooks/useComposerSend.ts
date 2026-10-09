@@ -144,6 +144,8 @@ export type ComposerSendHost = {
   executeSendFromQueueRef: MutableRefObject<ExecuteSendFromQueue>;
   executeSendLatestRef: MutableRefObject<(opts: ExecuteSendOpts) => Promise<boolean>>;
   claimSendForSession: (sessionId: string | null | undefined) => boolean;
+  /** Drop a post-Stop force_idle latch so the new turn can show Stop again. */
+  clearStopLatch: () => void;
   currentViewFocus: () => ViewFocus;
   patchSessionMessages: (
     targetSessionId: string | undefined | null,
@@ -177,9 +179,14 @@ export type ComposerSendHost = {
   setPromptHistoryScope: Dispatch<SetStateAction<any>>;
   setEditingUserMessageId: Dispatch<SetStateAction<string | null>>;
   setEditAttachments: Dispatch<SetStateAction<Attachment[]>>;
-  setRetryStatus: Dispatch<
-    SetStateAction<{ attempt: number; maxRetries: number; reason: string } | null>
-  >;
+  setRetryStatus: (
+    next: {
+      attempt: number;
+      maxRetries: number;
+      reason: string;
+      aborting?: boolean;
+    } | null,
+  ) => void;
   setRecentPromptHistory: Dispatch<SetStateAction<any>>;
   setAppDialog: Dispatch<SetStateAction<AppDialog | null>>;
 };
@@ -222,6 +229,7 @@ export function useComposerSend(host: ComposerSendHost) {
     executeSendFromQueueRef,
     executeSendLatestRef,
     claimSendForSession,
+    clearStopLatch,
     currentViewFocus,
     patchSessionMessages,
     ensureConnected,
@@ -294,6 +302,8 @@ const executeSend = async (opts: {
         });
   const sendKey = queueSessionKey(sendTargetId);
   if (!claimSendForSession(sendTargetId)) return false;
+  // A prior Stop may still be holding force_idle (Host lag). New turn owns Stop/Send.
+  clearStopLatch();
   const heldSendKeys = new Set<string>([sendKey]);
   const sendEpoch = (sendEpochBySessionRef.current.get(sendKey) ?? 0) + 1;
   sendEpochBySessionRef.current.set(sendKey, sendEpoch);
@@ -487,6 +497,41 @@ const executeSend = async (opts: {
       failStrip();
       return false;
     }
+    // ensureConnected can paint Host Ready between connect and sessionSend.
+    // Re-assert busy so the composer keeps Stop with no gap.
+    if (viewingTarget()) {
+      setSession((prev) =>
+        prev.state === "streaming"
+          ? prev.sessionId === sessionId
+            ? prev
+            : { ...prev, sessionId }
+          : {
+              ...prev,
+              sessionId,
+              state: "streaming",
+              lastError: null,
+            },
+      );
+    }
+    setLiveHost((prev) => {
+      if (prev.sessionId && prev.sessionId !== sessionId) return prev;
+      if (prev.state === "streaming" && prev.sessionId === sessionId) return prev;
+      const next = {
+        ...prev,
+        sessionId,
+        state: "streaming" as SessionSnapshot["state"],
+        lastError: null,
+      };
+      liveHostRef.current = next;
+      return next;
+    });
+    setLiveMap((prev) =>
+      projectHostIntoLiveMap(prev, {
+        sessionId,
+        state: "streaming",
+        streamingMessageId: null,
+      }),
+    );
     // Draft sends materialize a real id during ensureConnected. Atomically
     // migrate the claim so a second call targeting the new id cannot slip
     // through, while a newly opened draft remains independent.

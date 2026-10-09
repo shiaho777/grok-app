@@ -86,6 +86,7 @@ export const ukProviders = {
   "prov.presetCustom": "Власний",
   "prov.preset.deepseek.blurb": "Офіційний API DeepSeek — V4 Flash + Flash Vision Exp + Pro, мислення низький/високий/xвисокий/максимальний",
   "prov.preset.openrouter.blurb": "OpenRouter — GLM-5.3 Flash через chat_completions, контекст 1M, зір увімкнено",
+  "prov.preset.orcarouter.blurb": "OrcaRouter — OpenAI-сумісний multi-provider шлюз, Auto Router, зір увімкнено",
   "prov.preset.amux.blurb": "Реле Amux — Grok 4,6 / 4,5, офіційне зусилля низьке/середнє/високе/xвисоке",
   "prov.preset.yunApi.blurb": "Yun API (yunyi) — Grok 4,6 / 4,5, офіційне зусилля низьке/середнє/високе/xвисоке",
   "prov.preset.opencodeGo.blurb": "OpenCode Zen Go — DeepSeek V4 через chat_completions (не відповіді)",

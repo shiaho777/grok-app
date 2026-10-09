@@ -7,7 +7,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import { createT, intlLocale, type Locale, type MessageKey } from "@/i18n";
-import { GlassModal } from "@/components/GlassModal";
+import { ExtensionsPanelSkillModals } from "@/components/ExtensionsPanelSkillModals";
+import { ExtensionsPanelPluginsModals } from "@/components/ExtensionsPanelPluginsModals";
+import { ExtensionsPanelMcpModals } from "@/components/ExtensionsPanelMcpModals";
 import {
   IconDoctor,
   IconEdit,
@@ -27,7 +29,6 @@ import {
   mergeInspectErrors,
   normalizePluginInstallSource,
   pluginRowKey,
-  shortPathLabel,
   skillMetaLine,
   skillSourceTone,
   sortMcpByName,
@@ -35,10 +36,9 @@ import {
   sortSkillsByName,
 } from "@/lib/extensionsUi";
 import {
-  formatPluginValidateMessages,
-  pluginValidateBadgeTone,
-  pluginValidateHint,
-  pluginValidateKindLabel,
+  buildPluginValidateExceptionPresentation,
+  buildPluginValidatePreflightError,
+  buildPluginValidatePresentation,
   type PluginValidateKind,
   type PluginValidatePresentation,
 } from "@/lib/pluginValidate";
@@ -48,7 +48,6 @@ import {
   mcpAuthGuidanceKey,
   mcpStatusBadgeMod,
   mcpStatusLabelKey,
-  redactMcpText,
   type McpServerStatus,
   type McpStatusIndex,
 } from "@/lib/mcpStatus";
@@ -57,7 +56,6 @@ import {
   mcpOauthActionLabelKey,
   type McpOauthAction,
 } from "@/lib/mcpOauth";
-import { McpOauthWizard } from "@/components/McpOauthWizard";
 import {
   isSkillEditable,
   resolveSkillMdPath,
@@ -69,9 +67,6 @@ import {
   buildSkillSaveOkPresentation,
   buildSkillSavePreflightError,
   buildSkillValidatePresentation,
-  skillEditBadgeTone,
-  skillEditHint,
-  skillEditKindLabel,
   type SkillEditKind,
   type SkillEditPresentation,
 } from "@/lib/skillEditFeedback";
@@ -83,6 +78,8 @@ import {
   ExtensionsBuildExtras,
   type ExtAgentsTabActions,
 } from "@/components/ExtensionsBuildExtras";
+import { CustomizeCommandsPanel } from "@/components/CustomizeCommandsPanel";
+import { ProjectRulesModal } from "@/components/ProjectRulesModal";
 import {
   ExtensionsHooksPanel,
   type ExtHooksTabActions,
@@ -95,8 +92,9 @@ import {
 } from "@/lib/pluginMarketplace";
 import {
   CHATCUT_CODEX_INSTALL_SOURCE,
+  X_API_INSTALL_SOURCE,
   isChatCutInstalled,
-  pluginDisplayName,
+  isXApiInstalled,
   resolveExtensionsTabId,
 } from "@/lib/pluginRecommended";
 import {
@@ -164,6 +162,8 @@ export type ExtensionsTabId =
   | "mcp"
   | "agents"
   | "hooks"
+  | "rules"
+  | "commands"
   /** @deprecated Deep-link only; resolves to plugins. */
   | "market";
 
@@ -261,6 +261,16 @@ export function ExtensionsPanel({
   const [detailsModel, setDetailsModel] =
     useState<AvailablePluginDetailModel | null>(null);
   const [installSource, setInstallSource] = useState("");
+  const [pathInstallError, setPathInstallError] = useState<string | null>(null);
+  const [pathValidate, setPathValidate] =
+    useState<PluginValidatePresentation | null>(null);
+  /** Confirm before `plugin install --trust` from the path-install modal. */
+  const [installConfirmSource, setInstallConfirmSource] = useState<
+    string | null
+  >(null);
+  const pathInstallInputRef = useRef<HTMLInputElement>(null);
+  /** Discover + button: install from local path / git. */
+  const [pathInstallOpen, setPathInstallOpen] = useState(false);
   /** GlassModal result for last validate (row or advanced install). */
   const [validateModal, setValidateModal] = useState<{
     open: boolean;
@@ -322,10 +332,16 @@ export function ExtensionsPanel({
   const [expandedMcpNames, setExpandedMcpNames] = useState<
     Record<string, boolean>
   >({});
-  /** Confirm Modal for recommended ChatCut install (never auto-install). */
-  const [chatcutInstallOpen, setChatcutInstallOpen] = useState(false);
-  /** Marketplace sources + advanced install live in a modal (not page body). */
+  /** Confirm modal for a recommended plugin (never auto-install). */
+  const [recommendedInstall, setRecommendedInstall] = useState<
+    "chatcut" | "x-api" | null
+  >(null);
+  /** Marketplace sources live in a modal (not page body). */
   const [sourcesModalOpen, setSourcesModalOpen] = useState(false);
+  const [pluginAuthServer, setPluginAuthServer] = useState<string | null>(null);
+  const [pluginAuthStatus, setPluginAuthStatus] = useState<
+    Record<string, api.PluginMcpAuthStatus>
+  >({});
   /** Enriched cards (manifest + logo) for installed plugins. */
   const [pluginCards, setPluginCards] = useState<PluginCardModel[]>([]);
   /** Discover catalog (available plugins) — own state so we render Featured 2-col. */
@@ -1262,16 +1278,83 @@ export function ExtensionsPanel({
     });
   };
 
-  const installPlugin = async () => {
+  const openPathInstall = useCallback(() => {
+    setSourcesModalOpen(false);
+    setPathInstallOpen(true);
+  }, []);
+
+  const browsePluginFolder = async () => {
+    if (!api.isTauri() || actionBusy || cliMissing) return;
+    try {
+      const dir = await api.pickDirectory();
+      if (!dir) return;
+      setInstallSource(dir);
+      setPathInstallError(null);
+      setPathValidate(null);
+      pathInstallInputRef.current?.focus();
+    } catch (e) {
+      setPathInstallError(String(e));
+    }
+  };
+
+  const validatePathInstall = async () => {
+    if (actionBusy || cliMissing) return;
+    const source = normalizePluginInstallSource(installSource);
+    const pre = buildPluginValidatePreflightError(source, {
+      isTauri: api.isTauri(),
+      emptyMessage: tr("ext.plugins.validate.hint.emptySource"),
+      pathOnlyMessage: tr("ext.plugins.validatePathOnly"),
+      hostOnlyMessage: tr("ext.plugins.validate.hint.hostOnly"),
+      labels: { kinds: pluginValidateKindLabels },
+    });
+    if (pre) {
+      setPathValidate(pre);
+      return;
+    }
+    setActionBusy("validate-path");
+    setPathInstallError(null);
+    try {
+      const res = await api.pluginValidate(source);
+      setPathValidate(
+        buildPluginValidatePresentation(res, {
+          kinds: pluginValidateKindLabels,
+          okTitle: tr("ext.plugins.validateOk"),
+          failTitle: tr("ext.plugins.validateFailed"),
+        }),
+      );
+    } catch (e) {
+      setPathValidate(
+        buildPluginValidateExceptionPresentation(e, {
+          kinds: pluginValidateKindLabels,
+          failTitle: tr("ext.plugins.validateFailed"),
+        }),
+      );
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const requestPathInstall = () => {
     if (!api.isTauri() || actionBusy || cliMissing) return;
     const source = normalizePluginInstallSource(installSource);
     if (!source) {
-      setActionError(tr("ext.plugins.installEmpty"));
+      setPathInstallError(tr("ext.plugins.installEmpty"));
       return;
     }
+    setPathInstallError(null);
+    setPathInstallOpen(false);
+    setInstallConfirmSource(source);
+  };
+
+  const confirmPathInstall = async () => {
+    const source = installConfirmSource;
+    if (!source || actionBusy) return;
+    setInstallConfirmSource(null);
     await runPluginAction("install", async () => {
       await api.pluginInstall(source);
       setInstallSource("");
+      setPathValidate(null);
+      setPathInstallError(null);
     });
   };
 
@@ -1472,6 +1555,7 @@ export function ExtensionsPanel({
     () => isChatCutInstalled(plugins),
     [plugins],
   );
+  const xApiInstalled = useMemo(() => isXApiInstalled(plugins), [plugins]);
 
   const q = extQuery.trim().toLowerCase();
   const filterText = useCallback(
@@ -1500,7 +1584,7 @@ export function ExtensionsPanel({
         vendor.includes("plugin") ||
         src.includes("plugin:") ||
         src.includes("/plugins/") ||
-        !!(s as { fromPlugin?: boolean }).fromPlugin;
+        !!s.fromPlugin;
       if (looksPlugin) fromPlugin.push(s);
       else user.push(s);
     }
@@ -1521,6 +1605,42 @@ export function ExtensionsPanel({
     );
   }, [pluginMcpServers, q, filterText]);
 
+  const pluginAuthNames = useMemo(
+    () =>
+      pluginMcpServers
+        .filter((s) => (s.authKind ?? "") === "x-api")
+        .map((s) => s.name),
+    [pluginMcpServers],
+  );
+
+  useEffect(() => {
+    if (tab !== "mcp" || !api.isTauri() || pluginAuthNames.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      pluginAuthNames.map(async (name) => {
+        try {
+          const st = await api.pluginMcpAuthStatus(name);
+          return [name, st] as const;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((rows) => {
+      if (cancelled) return;
+      setPluginAuthStatus((prev) => {
+        const next = { ...prev };
+        for (const row of rows) {
+          if (!row) continue;
+          next[row[0]] = row[1];
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, pluginAuthNames]);
+
   const mcpCount = servers.length;
   const searchPlaceholder =
     tab === "mcp"
@@ -1532,11 +1652,13 @@ export function ExtensionsPanel({
   const showTabSearch =
     tab === "plugins" || tab === "mcp" || tab === "skills";
 
-  const installChatCut = async () => {
+  const installRecommended = async (kind: "chatcut" | "x-api") => {
     if (!api.isTauri() || actionBusy || cliMissing) return;
-    setChatcutInstallOpen(false);
-    await runPluginAction("install:chatcut", async () => {
-      await api.pluginInstall(CHATCUT_CODEX_INSTALL_SOURCE);
+    setRecommendedInstall(null);
+    const source =
+      kind === "x-api" ? X_API_INSTALL_SOURCE : CHATCUT_CODEX_INSTALL_SOURCE;
+    await runPluginAction(`install:${kind}`, async () => {
+      await api.pluginInstall(source);
     });
   };
 
@@ -1666,6 +1788,8 @@ export function ExtensionsPanel({
                 ["plugins", "ext.plugins.title", plugins.length] as const,
                 ["mcp", "ext.mcp.title", mcpCount] as const,
                 ["skills", "ext.skills.title", skills.length] as const,
+                ["rules", "ext.rules.title", null] as const,
+                ["commands", "ext.commands.title", null] as const,
                 ["agents", "ext.agents.title", null] as const,
                 ["hooks", "ext.hooks.title", null] as const,
               ] as const
@@ -1902,8 +2026,8 @@ export function ExtensionsPanel({
           ) : null}
         </section>
 
-        {/* Recommended ChatCut if missing */}
-        {!chatcutInstalled ? (
+        {/* Recommended plugins if missing — never auto-install */}
+        {!chatcutInstalled || !xApiInstalled ? (
           <section
             className="ext-ref-block"
             id="settings-anchor-ext-plugins-recommended"
@@ -1912,31 +2036,60 @@ export function ExtensionsPanel({
               {tr("ext.plugins.recommendedTitle")}
             </div>
             <ul className="ext-ref-featured">
-              <li className="ext-ref-featured__item">
-                <div className="ext-ref-featured__icon" aria-hidden>
-                  <IconPuzzle size={18} />
-                </div>
-                <div className="ext-ref-featured__body">
-                  <div className="ext-ref-featured__title">
-                    {tr("ext.plugins.recommended.chatcutName")}
+              {!chatcutInstalled ? (
+                <li className="ext-ref-featured__item">
+                  <div className="ext-ref-featured__icon" aria-hidden>
+                    <IconPuzzle size={18} />
                   </div>
-                  <div className="ext-ref-featured__desc">
-                    {tr("ext.plugins.recommended.chatcutDesc")}
+                  <div className="ext-ref-featured__body">
+                    <div className="ext-ref-featured__title">
+                      {tr("ext.plugins.recommended.chatcutName")}
+                    </div>
+                    <div className="ext-ref-featured__desc">
+                      {tr("ext.plugins.recommended.chatcutDesc")}
+                    </div>
                   </div>
-                </div>
-                <div className="ext-ref-featured__end">
-                  <button
-                    type="button"
-                    className="btn btn--solid btn--sm"
-                    disabled={!!actionBusy || cliMissing}
-                    onClick={() => setChatcutInstallOpen(true)}
-                  >
-                    {actionBusy === "install:chatcut"
-                      ? tr("ext.plugins.installing")
-                      : tr("ext.plugins.recommended.install")}
-                  </button>
-                </div>
-              </li>
+                  <div className="ext-ref-featured__end">
+                    <button
+                      type="button"
+                      className="btn btn--solid btn--sm"
+                      disabled={!!actionBusy || cliMissing}
+                      onClick={() => setRecommendedInstall("chatcut")}
+                    >
+                      {actionBusy === "install:chatcut"
+                        ? tr("ext.plugins.installing")
+                        : tr("ext.plugins.recommended.install")}
+                    </button>
+                  </div>
+                </li>
+              ) : null}
+              {!xApiInstalled ? (
+                <li className="ext-ref-featured__item">
+                  <div className="ext-ref-featured__icon" aria-hidden>
+                    <IconPlug size={18} />
+                  </div>
+                  <div className="ext-ref-featured__body">
+                    <div className="ext-ref-featured__title">
+                      {tr("ext.plugins.recommended.xApiName")}
+                    </div>
+                    <div className="ext-ref-featured__desc">
+                      {tr("ext.plugins.recommended.xApiDesc")}
+                    </div>
+                  </div>
+                  <div className="ext-ref-featured__end">
+                    <button
+                      type="button"
+                      className="btn btn--solid btn--sm"
+                      disabled={!!actionBusy || cliMissing}
+                      onClick={() => setRecommendedInstall("x-api")}
+                    >
+                      {actionBusy === "install:x-api"
+                        ? tr("ext.plugins.installing")
+                        : tr("ext.plugins.recommended.install")}
+                    </button>
+                  </div>
+                </li>
+              ) : null}
             </ul>
           </section>
         ) : null}
@@ -1979,6 +2132,17 @@ export function ExtensionsPanel({
                 aria-label={tr("ext.plugins.sourcesAndInstall")}
               >
                 <IconSettings size={16} />
+              </button>
+              <button
+                type="button"
+                className="ext-ref-icon-btn"
+                id="settings-anchor-ext-plugins-install"
+                disabled={cliMissing}
+                onClick={openPathInstall}
+                title={tr("ext.plugins.advancedInstall")}
+                aria-label={tr("ext.plugins.advancedInstall")}
+              >
+                <IconPlus size={16} />
               </button>
             </span>
           </div>
@@ -2634,21 +2798,57 @@ export function ExtensionsPanel({
               <p className="ext-ref-empty">{tr("ext.mcp.fromPluginsEmpty")}</p>
             ) : (
               <ul className="ext-ref-list">
-                {filteredPluginMcp.map((s) => (
-                  <li key={`plugin-mcp:${s.name}`} className="ext-ref-row">
+                {filteredPluginMcp.map((s) => {
+                  const on = isExtensionEnabled(s.enabled);
+                  const auth = pluginAuthStatus[s.name];
+                  const canAuth = (s.authKind ?? "") === "x-api";
+                  const signedIn = !!auth?.authorized;
+                  const desc = signedIn
+                    ? tr("ext.mcp.pluginAuth.signedIn", {
+                        user: auth.username ? `@${auth.username}` : s.name,
+                      })
+                    : canAuth
+                      ? tr("ext.mcp.pluginAuth.unauthorized")
+                      : mcpMetaLine(s) || s.target || s.vendor || "—";
+                  return (
+                  <li
+                    key={`plugin-mcp:${s.name}`}
+                    className={
+                      "ext-ref-row" + (on ? "" : " ext-ref-row--off")
+                    }
+                  >
                     <div className="ext-ref-row__main">
                       <div className="ext-ref-row__icon" aria-hidden>
                         <IconPlug size={16} />
                       </div>
                       <div className="ext-ref-row__body">
                         <div className="ext-ref-row__title">{s.name}</div>
-                        <div className="ext-ref-row__desc">
-                          {mcpMetaLine(s) || s.vendor || "—"}
-                        </div>
+                        <div className="ext-ref-row__desc">{desc}</div>
+                      </div>
+                      <div className="ext-ref-row__end">
+                        {canAuth ? (
+                          <button
+                            type="button"
+                            className="btn btn--ghost btn--sm"
+                            disabled={!api.isTauri()}
+                            onClick={() => setPluginAuthServer(s.name)}
+                          >
+                            {signedIn
+                              ? tr("ext.mcp.pluginAuth.reauth")
+                              : tr("ext.mcp.pluginAuth")}
+                          </button>
+                        ) : null}
+                        <UiSwitch
+                          checked={on}
+                          disabled={!!busyKey}
+                          label={on ? tr("ext.enabled") : tr("ext.disabled")}
+                          onChange={(next) => void toggleMcp(s.name, next)}
+                        />
                       </div>
                     </div>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
           </section>
@@ -2657,6 +2857,18 @@ export function ExtensionsPanel({
       </>
       )}
 
+      {tab === "rules" && (
+        <ProjectRulesModal
+          open
+          embedded
+          onClose={() => {}}
+          projectPath={projectPath ?? null}
+          locale={locale}
+        />
+      )}
+      {tab === "commands" && (
+        <CustomizeCommandsPanel locale={locale} projectPath={projectPath} />
+      )}
       {tab === "hooks" && (
         <ExtensionsHooksPanel
           locale={locale}
@@ -2689,1398 +2901,140 @@ export function ExtensionsPanel({
       )}
       </div>
 
-      <GlassModal
-        open={chatcutInstallOpen}
-        onClose={() => {
-          if (actionBusy !== "install:chatcut") setChatcutInstallOpen(false);
-        }}
-        title={tr("ext.plugins.recommended.installTitle")}
-        size="sm"
-        closeLabel={tr("common.close")}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={actionBusy === "install:chatcut"}
-              onClick={() => setChatcutInstallOpen(false)}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--solid"
-              disabled={actionBusy === "install:chatcut" || cliMissing}
-              onClick={() => void installChatCut()}
-            >
-              {actionBusy === "install:chatcut"
-                ? tr("ext.plugins.installing")
-                : tr("ext.plugins.recommended.install")}
-            </button>
-          </>
-        }
-      >
-        <p className="app-dialog__msg">
-          {tr("ext.plugins.recommended.installConfirm", {
-            source: CHATCUT_CODEX_INSTALL_SOURCE,
-          })}
-        </p>
-        <p className="ext-field-hint">{tr("ext.market.installTrustNote")}</p>
-      </GlassModal>
-
-      <GlassModal
-        open={!!detailCard}
-        onClose={() => {
-          setDetailCard(null);
-          setDetailRawAvailable(null);
-          setDetailRawInstalled(null);
-        }}
-        title={detailCard?.displayName ?? tr("ext.market.detailTitle")}
-        size="md"
-        closeLabel={tr("common.close")}
-        wrapBody
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => {
-                setDetailCard(null);
-                setDetailRawAvailable(null);
-                setDetailRawInstalled(null);
-              }}
-            >
-              {tr("common.close")}
-            </button>
-            {detailRawAvailable && !detailCard?.installed ? (
-              <button
-                type="button"
-                className="btn btn--solid"
-                disabled={
-                  !!actionBusy ||
-                  cliMissing ||
-                  actionBusy === `inst:${detailRawAvailable.name}`
-                }
-                onClick={() => {
-                  const t = detailRawAvailable;
-                  setDetailCard(null);
-                  setDetailRawAvailable(null);
-                  void installAvailableDirect(t);
-                }}
-              >
-                {actionBusy === `inst:${detailRawAvailable.name}`
-                  ? tr("ext.market.installing")
-                  : tr("ext.market.install")}
-              </button>
-            ) : null}
-            {detailRawInstalled ? (
-              <button
-                type="button"
-                className="btn btn--solid"
-                onClick={() => {
-                  togglePlugin(detailRawInstalled);
-                  setDetailCard(null);
-                  setDetailRawInstalled(null);
-                }}
-              >
-                {detailRawInstalled.enabled
-                  ? tr("ext.plugins.disable")
-                  : tr("ext.plugins.enable")}
-              </button>
-            ) : null}
-          </>
-        }
-      >
-        {detailCard ? (
-          <div className="ext-market-detail">
-            <div
-              style={{
-                display: "flex",
-                gap: 14,
-                alignItems: "flex-start",
-                marginBottom: 12,
-              }}
-            >
-              <div className="ext-ref-featured__icon" aria-hidden>
-                {detailCard.iconUrl ? (
-                  <img src={detailCard.iconUrl} alt="" />
-                ) : (
-                  <span className="ext-ref-icon__glyph">
-                    {pluginInitials(detailCard.displayName)}
-                  </span>
-                )}
-              </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div className="ext-ref-featured__title">
-                  {detailCard.displayName}
-                </div>
-                <div className="ext-ref-featured__desc">
-                  {detailCard.description || "—"}
-                </div>
-              </div>
-            </div>
-            {(() => {
-              const meta = metaByName.get(
-                detailCard.name.trim().toLowerCase(),
-              );
-              const clean: Array<[string, string]> = [];
-              clean.push([
-                tr("ext.market.field.marketplace"),
-                detailCard.marketplace?.trim() || "—",
-              ]);
-              clean.push([
-                tr("ext.market.field.version"),
-                String(detailCard.version || meta?.version || "—"),
-              ]);
-              if (meta?.category || detailCard.categoryLabel) {
-                clean.push([
-                  detailCard.categoryLabel || "Category",
-                  meta?.category || detailCard.categoryLabel || "—",
-                ]);
-              }
-              if (meta?.author) clean.push(["Author", meta.author]);
-              if (meta?.homepage) clean.push(["Homepage", meta.homepage]);
-              if (meta?.repository) clean.push(["Repository", meta.repository]);
-              if (meta?.license) clean.push(["License", meta.license]);
-              if (detailCard.providesLine) {
-                clean.push([
-                  tr("ext.market.componentsLabel"),
-                  detailCard.providesLine,
-                ]);
-              }
-              if (meta?.keywords && meta.keywords.length > 0) {
-                clean.push(["Keywords", meta.keywords.join(", ")]);
-              }
-              if (detailRawInstalled?.path) {
-                clean.push(["Path", detailRawInstalled.path]);
-              }
-              if (detailRawInstalled?.source) {
-                clean.push([
-                  tr("ext.market.field.source"),
-                  detailRawInstalled.source,
-                ]);
-              }
-              return (
-                <dl className="ext-market-detail__meta">
-                  {clean.map(([k, v]) => (
-                    <div key={k} className="ext-market-detail__row">
-                      <dt>{k}</dt>
-                      <dd title={v}>{v}</dd>
-                    </div>
-                  ))}
-                </dl>
-              );
-            })()}
-            {(() => {
-              const meta = metaByName.get(
-                detailCard.name.trim().toLowerCase(),
-              );
-              const long =
-                meta?.longDescription?.trim() ||
-                detailCard.description ||
-                "";
-              if (!long) return null;
-              return (
-                <p className="ext-field-hint" style={{ marginTop: 12 }}>
-                  {long}
-                </p>
-              );
-            })()}
-            {!detailCard.installed ? (
-              <p className="ext-field-hint" style={{ marginTop: 8 }}>
-                {tr("ext.market.installTrustNote")}
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-      </GlassModal>
-
-      <GlassModal
-        open={!!menuPlugin}
-        onClose={() => setMenuPlugin(null)}
-        title={
-          pluginDisplayName(
-            menuPlugin,
-            tr("ext.plugins.recommended.chatcutName"),
-          )
-        }
-        size="sm"
-        closeLabel={tr("common.close")}
-        footer={
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => setMenuPlugin(null)}
-          >
-            {tr("common.close")}
-          </button>
-        }
-      >
-        {menuPlugin ? (
-          <div className="ext-ref-stack" style={{ gap: 8 }}>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              style={{ justifyContent: "flex-start" }}
-              onClick={() => {
-                togglePlugin(menuPlugin);
-                setMenuPlugin(null);
-              }}
-            >
-              {menuPlugin.enabled
-                ? tr("ext.plugins.disable")
-                : tr("ext.plugins.enable")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              style={{ justifyContent: "flex-start" }}
-              onClick={() => {
-                void showDetails(menuPlugin);
-                setMenuPlugin(null);
-              }}
-            >
-              {tr("ext.plugins.details")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost ext-item__danger"
-              style={{ justifyContent: "flex-start" }}
-              onClick={() => {
-                setUninstallTarget(menuPlugin);
-                setMenuPlugin(null);
-              }}
-            >
-              {tr("ext.plugins.uninstall")}
-            </button>
-          </div>
-        ) : null}
-      </GlassModal>
-
-      <GlassModal
-        open={sourcesModalOpen}
-        onClose={() => setSourcesModalOpen(false)}
-        title={tr("ext.plugins.sourcesModalTitle")}
-        size="lg"
-        closeLabel={tr("common.close")}
-        wrapBody
-        footer={
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => setSourcesModalOpen(false)}
-          >
-            {tr("common.close")}
-          </button>
-        }
-      >
-        <p className="ext-ref-block__lead" style={{ marginBottom: 12 }}>
-          {tr("ext.plugins.sourcesModalLead")}
-        </p>
-        <div className="ext-ref-block" style={{ marginBottom: 16 }}>
-          <div className="ext-ref-block__head">
-            <h3 className="ext-ref-block__title">
-              {tr("ext.plugins.sourcesListTitle")}
-            </h3>
-          </div>
-          {/* Reuse market block for sources management only (non-embedded shows sources). */}
-          <ExtensionsBuildExtras
-            locale={locale}
-            projectPath={projectPath}
-            cliFound={cliFound && !cliMissing}
-            mode="market"
-            embedded
-            sourcesOnly
-            installedPlugins={plugins.map((p) => ({
-              name: p.name,
-              marketplace: p.marketplace,
-              path: p.path,
-              source: p.source,
-              repoKey: p.repoKey,
-            }))}
-            onOpenRuntime={onOpenRuntime}
-            onPluginsChanged={() => {
-              invalidatePluginsListCache();
-              void refresh({ forcePlugins: true });
-            }}
-          />
-        </div>
-        <div className="ext-ref-advanced" style={{ borderRadius: 12 }}>
-          <div style={{ padding: "12px 14px" }}>
-            <div className="ext-ref-block__title" style={{ marginBottom: 8 }}>
-              {tr("ext.plugins.advancedInstall")}
-            </div>
-            <div className="ext-plugin-install">
-              <label
-                className="ext-plugin-install__label"
-                htmlFor="ext-plugin-source-modal"
-              >
-                {tr("ext.plugins.installLabel")}
-              </label>
-              <div className="ext-plugin-install__row">
-                <input
-                  id="ext-plugin-source-modal"
-                  type="text"
-                  className="settings-input ext-plugin-install__input"
-                  value={installSource}
-                  placeholder={tr("ext.plugins.installPlaceholder")}
-                  disabled={!!actionBusy || cliMissing}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(e) => setInstallSource(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      void installPlugin();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn btn--solid btn--sm"
-                  disabled={
-                    !!actionBusy ||
-                    cliMissing ||
-                    !normalizePluginInstallSource(installSource)
-                  }
-                  onClick={() => void installPlugin()}
-                >
-                  {actionBusy === "install"
-                    ? tr("ext.plugins.installing")
-                    : tr("ext.plugins.install")}
-                </button>
-              </div>
-              <p className="ext-plugin-install__hint">
-                {tr("ext.plugins.installHint")}
-              </p>
-            </div>
-          </div>
-        </div>
-      </GlassModal>
-
-      <GlassModal
-        open={!!uninstallTarget}
-        onClose={() => {
-          if (!actionBusy) setUninstallTarget(null);
-        }}
-        title={tr("ext.plugins.uninstallTitle")}
-        size="sm"
-        closeLabel={tr("common.close")}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={!!actionBusy}
-              onClick={() => setUninstallTarget(null)}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--danger"
-              disabled={!!actionBusy}
-              onClick={() => void confirmUninstall()}
-            >
-              {tr("ext.plugins.uninstall")}
-            </button>
-          </>
-        }
-      >
-        <p className="app-dialog__msg">
-          {tr("ext.plugins.uninstallConfirm", {
-            name: uninstallTarget?.name ?? "",
-          })}
-        </p>
-      </GlassModal>
-
-      <GlassModal
-        open={validateModal.open && !!validateModal.presentation}
-        onClose={() =>
-          setValidateModal((prev) => ({ ...prev, open: false }))
-        }
-        title={
-          validateModal.pluginName
-            ? tr("ext.plugins.validate.resultTitleNamed", {
-                name: validateModal.pluginName,
-              })
-            : tr("ext.plugins.validate.resultTitle")
-        }
-        size="lg"
-        closeLabel={tr("common.close")}
-        wrapBody
-        bodyClassName="ext-plugin-result-modal"
-        footer={
-          <button
-            type="button"
-            className="btn btn--solid"
-            onClick={() =>
-              setValidateModal((prev) => ({ ...prev, open: false }))
-            }
-          >
-            {tr("common.close")}
-          </button>
-        }
-      >
-        {validateModal.presentation ? (
-          <div className="ext-plugin-result">
-            <div className="ext-plugin-result__meta">
-              <span
-                className={
-                  "ext-badge ext-badge--" +
-                  pluginValidateBadgeTone(validateModal.presentation.severity)
-                }
-              >
-                {pluginValidateKindLabel(
-                  validateModal.presentation.kind,
-                  pluginValidateKindLabels,
-                )}
-              </span>
-              {validateModal.presentation.softFail ? (
-                <span className="ext-badge ext-badge--muted">
-                  {tr("ext.plugins.validate.softFail")}
-                </span>
-              ) : null}
-              {validateModal.presentation.ok ? (
-                <span className="ext-badge ext-badge--ok">
-                  {tr("ext.plugins.validateOk")}
-                </span>
-              ) : null}
-            </div>
-            <p
-              className={
-                "ext-plugin-result__summary" +
-                (validateModal.presentation.severity === "ok"
-                  ? " ext-plugin-result__summary--ok"
-                  : validateModal.presentation.severity === "err"
-                    ? " ext-plugin-result__summary--err"
-                    : " ext-plugin-result__summary--warn")
-              }
-            >
-              {validateModal.presentation.summary}
-            </p>
-            {pluginValidateHint(
-              validateModal.presentation.kind,
-              pluginValidateKindHints,
-            ) ? (
-              <p className="ext-plugin-result__hint">
-                {pluginValidateHint(
-                  validateModal.presentation.kind,
-                  pluginValidateKindHints,
-                )}
-              </p>
-            ) : null}
-            {validateModal.presentation.detail &&
-            validateModal.presentation.detail !==
-              validateModal.presentation.summary ? (
-              <pre className="ext-plugin-result__detail">
-                {validateModal.presentation.detail}
-              </pre>
-            ) : validateModal.presentation.messages.length > 1 ? (
-              <pre className="ext-plugin-result__detail">
-                {formatPluginValidateMessages(
-                  validateModal.presentation.messages,
-                )}
-              </pre>
-            ) : null}
-            {validateModal.presentation.reason ? (
-              <p className="ext-plugin-result__reason">
-                <span className="ext-plugin-result__label">
-                  {tr("ext.plugins.validate.reason")}
-                </span>
-                <code>{validateModal.presentation.reason}</code>
-              </p>
-            ) : null}
-            {validateModal.presentation.path ? (
-              <p
-                className="ext-plugin-result__path"
-                title={validateModal.presentation.path}
-              >
-                <span className="ext-plugin-result__label">
-                  {tr("ext.plugins.validate.path")}
-                </span>
-                <code>{validateModal.presentation.path}</code>
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-      </GlassModal>
-
-      <GlassModal
-        open={detailsOpen}
-        onClose={() => {
-          setDetailsOpen(false);
-          setDetailsModel(null);
-        }}
-        title={tr("ext.plugins.detailsTitle", { name: detailsTitle })}
-        size="lg"
-        closeLabel={tr("common.close")}
-        wrapBody
-        footer={
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => {
-              setDetailsOpen(false);
-              setDetailsModel(null);
-            }}
-          >
-            {tr("common.close")}
-          </button>
-        }
-      >
-        {detailsModel ? (
-          <div className="ext-market-detail">
-            <dl className="ext-market-detail__meta">
-              <div className="ext-market-detail__row">
-                <dt>{tr("ext.market.field.marketplace")}</dt>
-                <dd>
-                  {detailsModel.marketplace?.trim() ||
-                    tr("ext.market.field.unknown")}
-                </dd>
-              </div>
-              <div className="ext-market-detail__row">
-                <dt>{tr("ext.market.field.version")}</dt>
-                <dd>
-                  {detailsModel.versionLabel
-                    ? `v${detailsModel.versionLabel}`
-                    : tr("ext.market.field.unknown")}
-                </dd>
-              </div>
-            </dl>
-            {detailsModel.badges.length > 0 ? (
-              <div
-                className="ext-component-badges ext-component-badges--detail"
-                aria-label={tr("ext.market.componentsLabel")}
-              >
-                {detailsModel.badges.map((b) => (
-                  <span
-                    key={b.kind}
-                    className={
-                      "ext-badge ext-badge--component ext-badge--component-" +
-                      b.kind
-                    }
-                  >
-                    {badgeLabel(b.kind, b.count)}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        {detailsLoading ? (
-          <p className="ext-empty">{tr("ext.plugins.detailsLoading")}</p>
-        ) : (
-          <pre className="ext-details-pre">{detailsBody}</pre>
-        )}
-      </GlassModal>
-
-      <GlassModal
-        open={addOpen}
-        onClose={() => {
-          if (actionBusy !== "mcp:add") setAddOpen(false);
-        }}
-        title={tr("ext.mcp.addTitle")}
-        size="md"
-        closeLabel={tr("common.close")}
-        wrapBody
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={actionBusy === "mcp:add"}
-              onClick={() => setAddOpen(false)}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--solid"
-              disabled={
-                actionBusy === "mcp:add" ||
-                !addName.trim() ||
-                !addCommand.trim()
-              }
-              onClick={() => void submitAdd()}
-            >
-              {actionBusy === "mcp:add"
-                ? tr("ext.mcp.addWorking")
-                : tr("ext.mcp.addSubmit")}
-            </button>
-          </>
-        }
-      >
-        <form
-          className="app-dialog__form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submitAdd();
-          }}
-        >
-          <label className="field">
-            <span>{tr("ext.mcp.name")}</span>
-            <input
-              className="app-dialog__input"
-              value={addName}
-              onChange={(e) => setAddName(e.target.value)}
-              placeholder={tr("ext.mcp.namePlaceholder")}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={actionBusy === "mcp:add"}
-            />
-          </label>
-          <label className="field">
-            <span>{tr("ext.mcp.command")}</span>
-            <input
-              className="app-dialog__input"
-              value={addCommand}
-              onChange={(e) => setAddCommand(e.target.value)}
-              placeholder={tr("ext.mcp.commandPlaceholder")}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={actionBusy === "mcp:add"}
-            />
-          </label>
-          <label className="field">
-            <span>{tr("ext.mcp.args")}</span>
-            <input
-              className="app-dialog__input"
-              value={addArgs}
-              onChange={(e) => setAddArgs(e.target.value)}
-              placeholder={tr("ext.mcp.argsPlaceholder")}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={actionBusy === "mcp:add"}
-            />
-            <span className="ext-field-hint">{tr("ext.mcp.argsHint")}</span>
-          </label>
-          <label className="field">
-            <span>{tr("ext.mcp.env")}</span>
-            <textarea
-              className="app-dialog__input ext-env-textarea"
-              value={addEnv}
-              onChange={(e) => setAddEnv(e.target.value)}
-              placeholder={tr("ext.mcp.envPlaceholder")}
-              rows={3}
-              spellCheck={false}
-              disabled={actionBusy === "mcp:add"}
-            />
-            <span className="ext-field-hint">{tr("ext.mcp.envHint")}</span>
-          </label>
-        </form>
-      </GlassModal>
-
-      <GlassModal
-        open={!!removeTarget}
-        onClose={() => {
-          if (!actionBusy) setRemoveTarget(null);
-        }}
-        title={tr("ext.mcp.removeTitle")}
-        size="sm"
-        closeLabel={tr("common.close")}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={!!actionBusy}
-              onClick={() => setRemoveTarget(null)}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--danger"
-              disabled={!!actionBusy}
-              onClick={() => void confirmRemoveMcp()}
-            >
-              {tr("ext.mcp.remove")}
-            </button>
-          </>
-        }
-      >
-        <p className="app-dialog__msg">
-          {tr("ext.mcp.removeConfirm", {
-            name: removeTarget?.name ?? "",
-          })}
-        </p>
-      </GlassModal>
-
-      <GlassModal
-        open={doctorOpen}
-        onClose={() => {
-          if (!doctorLoading) setDoctorOpen(false);
-        }}
-        title={
-          doctorFocus
-            ? `${tr("ext.mcp.doctorTitle")} · ${doctorFocus}`
-            : tr("ext.mcp.doctorTitle")
-        }
-        size="lg"
-        closeLabel={tr("common.close")}
-        wrapBody
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={doctorLoading}
-              onClick={() => void runDoctor(doctorFocus)}
-            >
-              <IconRefresh size={14} />
-              <span>{tr("ext.mcp.doctorRerun")}</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={doctorLoading}
-              onClick={() => setDoctorOpen(false)}
-            >
-              {tr("common.close")}
-            </button>
-          </>
-        }
-      >
-        {doctorLoading && (
-          <p className="ext-empty">{tr("ext.mcp.doctorRunning")}</p>
-        )}
-        {!doctorLoading && doctorError && (
-          <div className="ext-alert ext-alert--error" role="alert">
-            <p className="ext-alert__body">{doctorError}</p>
-          </div>
-        )}
-        {!doctorLoading && doctorReport && (
-          <div className="ext-doctor">
-            <p className="ext-doctor__summary">
-              {tr("ext.mcp.doctorSummary", {
-                healthy: doctorReport.summary.healthy,
-                unhealthy: doctorReport.summary.unhealthy,
-                total: doctorReport.summary.total,
-              })}
-            </p>
-            {(doctorReport.sources?.length ?? 0) > 0 ? (
-              <div className="ext-doctor__sources">
-                <div className="ext-doctor__section-title">
-                  {tr("ext.mcp.doctorSources")}
-                </div>
-                <ul className="ext-doctor__source-list">
-                  {doctorReport.sources.map((src: any) => (
-                    <li key={src.path}>
-                      <code>{src.path}</code>
-                      <span className="ext-badge ext-badge--muted">
-                        {src.status}
-                        {src.serverCount != null
-                          ? ` · ${src.serverCount}`
-                          : ""}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {(doctorReport.servers?.length ?? 0) === 0 ? (
-              <p className="ext-empty">
-                {redactMcpText(doctorReport.rawText)?.trim() ||
-                  tr("ext.mcp.doctorEmpty")}
-              </p>
-            ) : (
-              <ul className="ext-list ext-doctor__servers">
-                {doctorReport.servers.map((s: any) => {
-                  const st =
-                    lookupServerStatus(doctorReportStatusIndex, s.name) ??
-                    lookupServerStatus(doctorStatusIndex, s.name);
-                  const badgeMod = st
-                    ? mcpStatusBadgeMod(st.tone)
-                    : s.healthy
-                      ? "ok"
-                      : "fail";
-                  const label = st
-                    ? tr(mcpStatusLabelKey(st.tone) as MessageKey)
-                    : s.healthy
-                      ? tr("ext.mcp.doctorHealthy")
-                      : tr("ext.mcp.doctorUnhealthy");
-                  const guidanceKey = st
-                    ? mcpAuthGuidanceKey(st.tone)
-                    : null;
-                  const oauthAction = st
-                    ? classifyMcpOauthFromStatus(st)
-                    : null;
-                  return (
-                    <li
-                      key={s.name}
-                      className={
-                        "ext-item" + (s.healthy ? "" : " ext-item--off")
-                      }
-                    >
-                      <div className="ext-item__head">
-                        <strong className="ext-item__name">{s.name}</strong>
-                        <span
-                          className={
-                            "ext-mcp-status ext-mcp-status--" + badgeMod
-                          }
-                        >
-                          <span
-                            className="ext-mcp-status__lamp"
-                            aria-hidden
-                          />
-                          <span
-                            className={"ext-badge ext-badge--" + badgeMod}
-                          >
-                            {label}
-                          </span>
-                        </span>
-                        {s.transport ? (
-                          <span className="ext-badge ext-badge--muted">
-                            {s.transport}
-                          </span>
-                        ) : null}
-                      </div>
-                      {s.target ? (
-                        <p className="ext-item__desc" title={s.target}>
-                          {shortPathLabel(s.target, 72) || s.target}
-                        </p>
-                      ) : null}
-                      {st?.needsAuthRefresh && guidanceKey ? (
-                        <div className="ext-mcp-auth-row">
-                          <p className="ext-mcp-auth-hint">
-                            {tr(guidanceKey as MessageKey)}
-                          </p>
-                          <button
-                            type="button"
-                            className="btn btn--ghost btn--sm"
-                            onClick={() => openOauthWizard(oauthAction, st)}
-                          >
-                            {tr(
-                              (oauthAction
-                                ? mcpOauthActionLabelKey(oauthAction.kind)
-                                : "ext.mcp.auth.howToRefresh") as MessageKey,
-                            )}
-                          </button>
-                        </div>
-                      ) : null}
-                      {Array.isArray(s.checks) && s.checks.length > 0 ? (
-                        <ul className="ext-doctor__checks">
-                          {s.checks.map((c: any, i: any) => (
-                            <li
-                              key={`${s.name}:${c.label}:${i}`}
-                              className={
-                                "ext-doctor__check" +
-                                (c.passed ? " is-pass" : " is-fail")
-                              }
-                            >
-                              <span className="ext-doctor__check-label">
-                                {c.passed ? "✓" : "✗"} {c.label}
-                              </span>
-                              {c.detail ? (
-                                <span className="ext-doctor__check-detail">
-                                  {redactMcpText(c.detail)}
-                                </span>
-                              ) : null}
-                              {c.hint ? (
-                                <span className="ext-doctor__check-hint">
-                                  {tr("ext.mcp.doctorHint", {
-                                    hint: redactMcpText(c.hint),
-                                  })}
-                                </span>
-                              ) : null}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {doctorReport.rawText ? (
-              <pre className="ext-details-pre">
-                {redactMcpText(doctorReport.rawText)}
-              </pre>
-            ) : null}
-          </div>
-        )}
-      </GlassModal>
-
-      <McpOauthWizard
-        open={!!oauthWizardTarget}
+      <ExtensionsPanelPluginsModals
+        projectPath={projectPath ?? null}
+        cliFound={cliFound}
+        onOpenRuntime={() => onOpenRuntime?.()}
+        cliMissing={cliMissing}
+        plugins={plugins}
+        recommendedInstall={recommendedInstall}
+        setRecommendedInstall={setRecommendedInstall}
+        installRecommended={installRecommended}
+        installAvailableDirect={installAvailableDirect}
+        installSource={installSource}
+        pathInstallOpen={pathInstallOpen}
+        setPathInstallOpen={setPathInstallOpen}
+        pathInstallError={pathInstallError}
+        setPathInstallError={setPathInstallError}
+        setPathValidate={setPathValidate}
+        setInstallSource={setInstallSource}
+        openPathInstall={openPathInstall}
+        browsePluginFolder={browsePluginFolder}
+        pathInstallInputRef={pathInstallInputRef}
+        pathValidate={pathValidate}
+        validatePathInstall={validatePathInstall}
+        requestPathInstall={requestPathInstall}
+        installConfirmSource={installConfirmSource}
+        setInstallConfirmSource={setInstallConfirmSource}
+        confirmPathInstall={confirmPathInstall}
+        detailCard={detailCard}
+        setDetailCard={setDetailCard}
+        menuPlugin={menuPlugin}
+        setMenuPlugin={setMenuPlugin}
+        setDetailsModel={setDetailsModel}
+        setDetailRawAvailable={setDetailRawAvailable}
+        setDetailRawInstalled={setDetailRawInstalled}
+        showDetails={showDetails}
+        setDetailsOpen={setDetailsOpen}
+        detailsOpen={detailsOpen}
+        detailsTitle={detailsTitle}
+        detailsBody={detailsBody}
+        detailsLoading={detailsLoading}
+        detailsModel={detailsModel}
+        detailRawAvailable={detailRawAvailable}
+        detailRawInstalled={detailRawInstalled}
+        togglePlugin={togglePlugin}
+        badgeLabel={badgeLabel}
+        metaByName={metaByName}
+        uninstallTarget={uninstallTarget}
+        setUninstallTarget={setUninstallTarget}
+        confirmUninstall={confirmUninstall}
+        sourcesModalOpen={sourcesModalOpen}
+        setSourcesModalOpen={setSourcesModalOpen}
+        validateModal={validateModal}
+        setValidateModal={setValidateModal}
+        pluginValidateKindLabels={pluginValidateKindLabels}
+        pluginValidateKindHints={pluginValidateKindHints}
+        setPluginAuthStatus={setPluginAuthStatus}
+        pluginAuthServer={pluginAuthServer}
+        setPluginAuthServer={setPluginAuthServer}
+        refresh={refresh}
+        tr={tr}
         locale={locale}
-        action={oauthWizardTarget?.action ?? null}
-        statusReason={oauthWizardTarget?.status.reason ?? null}
-        onClose={() => setOauthWizardTarget(null)}
-        onRefreshDoctor={async (serverName) => {
-          // Keep doctor modal closed when refreshing from wizard; still update index.
-          if (!api.isTauri()) {
-            return { report: null, error: tr("ext.needTauri") };
-          }
-          setDoctorLoading(true);
-          setDoctorError(null);
-          setDoctorFocus(serverName?.trim() || null);
-          try {
-            const report = await api.mcpDoctor(serverName?.trim() || null);
-            setDoctorReport(report);
-            setDoctorLastAt(Date.now());
-            const next = indexDoctorServerStatuses(report);
-            setDoctorStatusIndex((prev) => {
-              if (!serverName?.trim()) return next;
-              const merged = new Map(prev);
-              for (const [k, v] of next) merged.set(k, v);
-              return merged;
-            });
-            return { report, error: null };
-          } catch (e) {
-            const error = String(e);
-            setDoctorError(error);
-            return { report: null, error };
-          } finally {
-            setDoctorLoading(false);
-          }
-        }}
+        actionBusy={actionBusy}
       />
 
-      <GlassModal
-        open={skillNewOpen}
-        onClose={() => {
-          if (actionBusy !== "skill:create") setSkillNewOpen(false);
-        }}
-        title={tr("ext.skills.newTitle")}
-        size="md"
-        closeLabel={tr("common.close")}
-        wrapBody
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={actionBusy === "skill:create"}
-              onClick={() => setSkillNewOpen(false)}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--solid"
-              disabled={
-                actionBusy === "skill:create" || !skillNewSanitized
-              }
-              onClick={() => void submitSkillNew()}
-            >
-              {actionBusy === "skill:create"
-                ? tr("ext.skills.newWorking")
-                : tr("ext.skills.newSubmit")}
-            </button>
-          </>
-        }
-      >
-        <form
-          className="app-dialog__form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submitSkillNew();
-          }}
-        >
-          <label className="field">
-            <span>{tr("ext.skills.newName")}</span>
-            <input
-              className="app-dialog__input"
-              value={skillNewName}
-              onChange={(e) => {
-                setSkillNewName(e.target.value);
-                setSkillNewError(null);
-              }}
-              placeholder={tr("ext.skills.newNamePlaceholder")}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={actionBusy === "skill:create"}
-              autoFocus
-            />
-            <span className="ext-field-hint">
-              {skillNewSanitized
-                ? tr("ext.skills.newNameHintOk", { name: skillNewSanitized })
-                : tr("ext.skills.newNameHint")}
-            </span>
-          </label>
-          <label className="field">
-            <span>{tr("ext.skills.newDescription")}</span>
-            <textarea
-              className="app-dialog__input ext-env-textarea"
-              value={skillNewDesc}
-              onChange={(e) => {
-                setSkillNewDesc(e.target.value);
-                setSkillNewError(null);
-              }}
-              placeholder={tr("ext.skills.newDescriptionPlaceholder")}
-              rows={3}
-              spellCheck
-              disabled={actionBusy === "skill:create"}
-            />
-            <span className="ext-field-hint">
-              {tr("ext.skills.newDescriptionHint")}
-            </span>
-          </label>
-          <fieldset className="field" disabled={actionBusy === "skill:create"}>
-            <legend>{tr("ext.skills.newScope")}</legend>
-            <label className="ext-radio-row">
-              <input
-                type="radio"
-                name="skill-new-scope"
-                checked={skillNewScope === "user"}
-                onChange={() => setSkillNewScope("user")}
-              />
-              <span>{tr("ext.skills.newScopeUser")}</span>
-            </label>
-            <label className="ext-radio-row">
-              <input
-                type="radio"
-                name="skill-new-scope"
-                checked={skillNewScope === "project"}
-                onChange={() => setSkillNewScope("project")}
-                disabled={!projectPath?.trim()}
-              />
-              <span>
-                {projectPath?.trim()
-                  ? tr("ext.skills.newScopeProject")
-                  : tr("ext.skills.newScopeProjectDisabled")}
-              </span>
-            </label>
-            <span className="ext-field-hint">{tr("ext.skills.newScopeHint")}</span>
-          </fieldset>
-          {skillNewError ? (
-            <p className="ext-alert" role="alert">
-              <span className="ext-alert__body">{skillNewError}</span>
-            </p>
-          ) : null}
-        </form>
-      </GlassModal>
-
-      <GlassModal
-        open={!!skillEditor}
-        onClose={requestCloseSkillEditor}
-        title={
-          skillEditor
-            ? tr("ext.skills.editTitle", { name: skillEditor.skill.name })
-            : tr("ext.skills.edit")
-        }
-        size="lg"
-        closeLabel={tr("common.close")}
-        closeOnOverlay={!skillEditor?.saving}
-        wrapBody
-        bodyClassName="ext-skill-editor"
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={!!skillEditor?.saving}
-              onClick={requestCloseSkillEditor}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={
-                !skillEditor || skillEditor.loading || skillEditor.saving
-              }
-              onClick={validateSkillEditor}
-            >
-              {tr("ext.skills.editValidate")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--solid"
-              disabled={
-                !skillEditor ||
-                skillEditor.loading ||
-                skillEditor.saving ||
-                !!skillEditor.error ||
-                !skillEditorDirty
-              }
-              onClick={() => void saveSkillEditor()}
-            >
-              {skillEditor?.saving
-                ? tr("ext.skills.editSaving")
-                : tr("common.save")}
-            </button>
-          </>
-        }
-      >
-        {skillEditor ? (
-          <>
-            {!isExtensionEnabled(skillEditor.skill.enabled) ? (
-              <p className="ext-skill-editor__note" role="status">
-                {tr("ext.skills.editDisabledNote")}
-              </p>
-            ) : null}
-            {skillEditor.path ? (
-              <p className="ext-skill-editor__path" title={skillEditor.path}>
-                {shortPathLabel(skillEditor.path, 72) || skillEditor.path}
-              </p>
-            ) : null}
-            {skillEditor.loading ? (
-              <p className="ext-empty">{tr("ext.skills.editLoading")}</p>
-            ) : skillEditor.error && !skillEditor.baselineText ? (
-              <p className="ext-alert ext-alert--error" role="alert">
-                <span className="ext-alert__body">{skillEditor.error}</span>
-              </p>
-            ) : (
-              <textarea
-                className="ext-skill-editor__textarea"
-                value={skillEditor.draftText}
-                onChange={(e) =>
-                  setSkillEditor((s) =>
-                    s
-                      ? {
-                          ...s,
-                          draftText: e.target.value,
-                          savedHint: null,
-                          error: null,
-                        }
-                      : s,
-                  )
-                }
-                spellCheck={false}
-                disabled={skillEditor.saving}
-                aria-label={tr("ext.skills.editAria", {
-                  name: skillEditor.skill.name,
-                })}
-                rows={18}
-              />
-            )}
-            {skillEditor.error && skillEditor.baselineText ? (
-              <p className="ext-skill-editor__error" role="alert">
-                {skillEditor.error}
-                {skillFeedback ? (
-                  <>
-                    {" "}
-                    <button
-                      type="button"
-                      className="btn btn--ghost btn--sm ext-skill-editor__details-btn"
-                      onClick={() => setSkillFeedbackOpen(true)}
-                    >
-                      {tr("ext.skills.feedback.viewDetails")}
-                    </button>
-                  </>
-                ) : null}
-              </p>
-            ) : null}
-            {skillEditor.savedHint ? (
-              <p
-                className={
-                  "ext-skill-editor__saved" +
-                  (skillFeedback && !skillFeedback.blocking
-                    ? skillFeedback.severity === "warn"
-                      ? " ext-skill-editor__status--warn"
-                      : skillFeedback.severity === "ok"
-                        ? " ext-skill-editor__status--ok"
-                        : ""
-                    : " ext-skill-editor__status--ok")
-                }
-                role="status"
-              >
-                {skillEditor.savedHint}
-                {skillFeedback && !skillFeedback.blocking ? (
-                  <>
-                    {" "}
-                    <button
-                      type="button"
-                      className="btn btn--ghost btn--sm ext-skill-editor__details-btn"
-                      onClick={() => setSkillFeedbackOpen(true)}
-                    >
-                      {tr("ext.skills.feedback.viewDetails")}
-                    </button>
-                  </>
-                ) : null}
-              </p>
-            ) : null}
-          </>
-        ) : null}
-      </GlassModal>
-
-      <GlassModal
-        open={skillFeedbackOpen && !!skillFeedback}
-        onClose={() => setSkillFeedbackOpen(false)}
-        title={
-          skillFeedback?.phase === "validate"
-            ? tr("ext.skills.feedback.resultValidateTitle")
-            : skillFeedback?.phase === "load"
-              ? tr("ext.skills.feedback.resultLoadTitle")
-              : skillFeedback?.phase === "create"
-                ? tr("ext.skills.feedback.resultCreateTitle")
-                : tr("ext.skills.feedback.resultSaveTitle")
-        }
-        size="md"
-        closeLabel={tr("common.close")}
-        wrapBody
-        bodyClassName="ext-skill-feedback"
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--solid"
-              onClick={() => setSkillFeedbackOpen(false)}
-            >
-              {tr("common.close")}
-            </button>
-          </>
-        }
-      >
-        {skillFeedback ? (
-          <div className="ext-skill-feedback__body">
-            <div className="ext-skill-feedback__meta">
-              <span
-                className={
-                  "ext-badge ext-badge--" +
-                  skillEditBadgeTone(skillFeedback.severity)
-                }
-              >
-                {skillEditKindLabel(skillFeedback.kind, skillKindLabels)}
-              </span>
-              {skillFeedback.name ? (
-                <span className="ext-badge ext-badge--muted">
-                  /{skillFeedback.name}
-                </span>
-              ) : null}
-              {skillFeedback.sizeBytes != null ? (
-                <span className="ext-badge ext-badge--muted">
-                  {tr("ext.skills.feedback.sizeBytes", {
-                    n: String(skillFeedback.sizeBytes),
-                  })}
-                </span>
-              ) : null}
-            </div>
-            <p
-              className={
-                "ext-skill-feedback__summary" +
-                (skillFeedback.severity === "ok"
-                  ? " ext-skill-feedback__summary--ok"
-                  : skillFeedback.severity === "err"
-                    ? " ext-skill-feedback__summary--err"
-                    : skillFeedback.severity === "warn"
-                      ? " ext-skill-feedback__summary--warn"
-                      : "")
-              }
-            >
-              {skillFeedback.summary}
-            </p>
-            {skillEditHint(skillFeedback.kind, skillKindHints) ? (
-              <p className="ext-skill-feedback__hint">
-                {skillEditHint(skillFeedback.kind, skillKindHints)}
-              </p>
-            ) : null}
-            {skillFeedback.detail &&
-            skillFeedback.detail !== skillFeedback.summary ? (
-              <p className="ext-skill-feedback__detail">
-                {skillFeedback.detail}
-              </p>
-            ) : null}
-            {skillFeedback.issues.length > 1 ? (
-              <ul className="ext-skill-feedback__issues">
-                {skillFeedback.issues.map((issue, idx) => (
-                  <li key={`${issue.kind}-${idx}`}>
-                    <span
-                      className={
-                        "ext-badge ext-badge--" +
-                        skillEditBadgeTone(issue.severity)
-                      }
-                    >
-                      {skillEditKindLabel(issue.kind, skillKindLabels)}
-                    </span>
-                    {issue.detail ? (
-                      <span className="ext-skill-feedback__issue-detail">
-                        {issue.detail}
-                      </span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            {skillFeedback.reason ? (
-              <p className="ext-skill-feedback__reason">
-                <span className="ext-skill-feedback__label">
-                  {tr("ext.skills.feedback.reason")}
-                </span>
-                <code>{skillFeedback.reason}</code>
-              </p>
-            ) : null}
-            {skillFeedback.path ? (
-              <p className="ext-skill-feedback__path" title={skillFeedback.path}>
-                <span className="ext-skill-feedback__label">
-                  {tr("ext.skills.feedback.path")}
-                </span>
-                <code>
-                  {shortPathLabel(skillFeedback.path, 64) || skillFeedback.path}
-                </code>
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-      </GlassModal>
-
-      <GlassModal
-        open={skillDiscardOpen}
-        onClose={() => setSkillDiscardOpen(false)}
-        title={tr("ext.skills.editDiscardTitle")}
-        size="sm"
-        closeLabel={tr("common.close")}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => setSkillDiscardOpen(false)}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--danger"
-              onClick={() => {
-                setSkillDiscardOpen(false);
-                closeSkillEditor();
-              }}
-            >
-              {tr("ext.skills.editDiscard")}
-            </button>
-          </>
-        }
-      >
-        <p className="app-dialog__msg">{tr("ext.skills.editDiscardBody")}</p>
-      </GlassModal>
-
-      <GlassModal
-        open={skillConflictOpen}
-        onClose={() => setSkillConflictOpen(false)}
-        title={tr("ext.skills.editConflictTitle")}
-        size="sm"
-        closeLabel={tr("common.close")}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => {
-                setSkillConflictOpen(false);
-                if (skillEditor) void openSkillEditor(skillEditor.skill);
-              }}
-            >
-              {tr("ext.skills.editConflictReload")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--solid"
-              onClick={() => {
-                setSkillConflictOpen(false);
-                void saveSkillEditor({ force: true });
-              }}
-            >
-              {tr("ext.skills.editConflictOverwrite")}
-            </button>
-          </>
-        }
-      >
-        <p className="app-dialog__msg">{tr("ext.skills.editConflictBody")}</p>
-      </GlassModal>
+      <ExtensionsPanelMcpModals
+        addOpen={addOpen}
+        setAddOpen={setAddOpen}
+        addName={addName}
+        setAddName={setAddName}
+        addCommand={addCommand}
+        setAddCommand={setAddCommand}
+        addArgs={addArgs}
+        setAddArgs={setAddArgs}
+        addEnv={addEnv}
+        setAddEnv={setAddEnv}
+        submitAdd={submitAdd}
+        removeTarget={removeTarget}
+        setRemoveTarget={setRemoveTarget}
+        confirmRemoveMcp={confirmRemoveMcp}
+        doctorOpen={doctorOpen}
+        setDoctorOpen={setDoctorOpen}
+        runDoctor={runDoctor}
+        doctorStatusIndex={doctorStatusIndex}
+        setDoctorStatusIndex={setDoctorStatusIndex}
+        doctorReportStatusIndex={doctorReportStatusIndex}
+        doctorLoading={doctorLoading}
+        setDoctorLoading={setDoctorLoading}
+        doctorError={doctorError}
+        setDoctorError={setDoctorError}
+        doctorReport={doctorReport}
+        setDoctorReport={setDoctorReport}
+        doctorFocus={doctorFocus}
+        setDoctorFocus={setDoctorFocus}
+        setDoctorLastAt={setDoctorLastAt}
+        oauthWizardTarget={oauthWizardTarget}
+        setOauthWizardTarget={setOauthWizardTarget}
+        openOauthWizard={openOauthWizard}
+        tr={tr}
+        locale={locale}
+        actionBusy={actionBusy}
+      />
+      <ExtensionsPanelSkillModals
+        tr={tr}
+        actionBusy={actionBusy}
+        skillKindLabels={skillKindLabels}
+        skillKindHints={skillKindHints}
+        skillNewSanitized={skillNewSanitized}
+        submitSkillNew={submitSkillNew}
+        requestCloseSkillEditor={requestCloseSkillEditor}
+        validateSkillEditor={validateSkillEditor}
+        closeSkillEditor={closeSkillEditor}
+        openSkillEditor={openSkillEditor}
+        projectPath={projectPath ?? null}
+        saveSkillEditor={saveSkillEditor}
+        skillEditor={skillEditor}
+        setSkillEditor={setSkillEditor}
+        skillEditorDirty={skillEditorDirty}
+        skillFeedback={skillFeedback}
+        skillNewOpen={skillNewOpen}
+        skillNewName={skillNewName}
+        skillNewDesc={skillNewDesc}
+        skillNewScope={skillNewScope}
+        skillNewError={skillNewError}
+        skillDiscardOpen={skillDiscardOpen}
+        skillConflictOpen={skillConflictOpen}
+        skillFeedbackOpen={skillFeedbackOpen}
+        setSkillNewOpen={setSkillNewOpen}
+        setSkillNewName={setSkillNewName}
+        setSkillNewDesc={setSkillNewDesc}
+        setSkillNewScope={setSkillNewScope}
+        setSkillNewError={setSkillNewError}
+        setSkillDiscardOpen={setSkillDiscardOpen}
+        setSkillConflictOpen={setSkillConflictOpen}
+        setSkillFeedbackOpen={setSkillFeedbackOpen}
+      />
     </div>
   );
 }

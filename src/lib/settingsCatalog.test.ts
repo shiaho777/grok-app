@@ -173,6 +173,8 @@ describe("settingsCatalog", () => {
       "plugins",
       "mcp",
       "skills",
+      "rules",
+      "commands",
       "agents",
       "hooks",
     ]);
@@ -203,6 +205,22 @@ describe("settingsCatalog", () => {
           h.entry.id === "ext.market" &&
           h.entry.tab === "plugins" &&
           h.entry.anchorId === "settings-anchor-ext-plugins-catalog",
+      ),
+    ).toBe(true);
+  });
+
+  it("indexes local-path plugin install on the plugins tab", () => {
+    const entry = SETTINGS_ENTRIES.find((e) => e.id === "ext.plugins.installPath");
+    expect(entry?.tab).toBe("plugins");
+    expect(entry?.anchorId).toBe("settings-anchor-ext-plugins-install");
+    const tZh = createT("zh");
+    const tEn = createT("en");
+    const hits = searchSettingsEntries("本地路径", tZh, tEn);
+    expect(
+      hits.some(
+        (h) =>
+          h.entry.id === "ext.plugins.installPath" &&
+          h.entry.anchorId === "settings-anchor-ext-plugins-install",
       ),
     ).toBe(true);
   });
@@ -307,8 +325,11 @@ describe("settingsCatalog", () => {
     expect(appearance).toContain("settings.skin");
     expect(appearance).toContain("settings.themeSchedule");
     expect(appearance).toContain("settings.wallpaper");
+    expect(appearance).toContain("settings.wallpaperColor");
     expect(appearance).toContain("settings.thinkingExpand");
     expect(appearance).toContain("settings.toolStepsAutoCollapse");
+    expect(appearance).toContain("settings.chatVirtualScroll");
+    expect(appearance).toContain("settings.filePathCardLabel");
     expect(appearance).toContain("settings.transcriptFilter");
     expect(appearance).toContain("settings.chatFontScale");
     expect(appearance).toContain("settings.codeFontScale");
@@ -544,6 +565,26 @@ describe("settingsCatalog", () => {
       toolCollapseZh.some(
         (h) => h.entry.id === "appearance.toolStepsAutoCollapse",
       ),
+    ).toBe(true);
+    const virtualScroll = searchSettingsEntries("virtual scroll", tZh, tEn);
+    expect(
+      virtualScroll.some((h) => h.entry.id === "appearance.chatVirtualScroll"),
+    ).toBe(true);
+    const virtualScrollZh = searchSettingsEntries("虚拟滚动", tZh, tEn);
+    expect(
+      virtualScrollZh.some((h) => h.entry.id === "appearance.chatVirtualScroll"),
+    ).toBe(true);
+    const scrollOptZh = searchSettingsEntries("滚动优化", tZh, tEn);
+    expect(
+      scrollOptZh.some((h) => h.entry.id === "appearance.chatVirtualScroll"),
+    ).toBe(true);
+    const filePathCard = searchSettingsEntries("file name only", tZh, tEn);
+    expect(
+      filePathCard.some((h) => h.entry.id === "appearance.filePathCardLabel"),
+    ).toBe(true);
+    const filePathCardZh = searchSettingsEntries("只显示文件名", tZh, tEn);
+    expect(
+      filePathCardZh.some((h) => h.entry.id === "appearance.filePathCardLabel"),
     ).toBe(true);
     const transcriptFilter = searchSettingsEntries("transcript filter", tZh, tEn);
     expect(

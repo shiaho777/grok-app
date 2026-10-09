@@ -31,8 +31,16 @@ PRODUCT = "Grok App"
 OFFICIAL_SITE = "https://grok-app.com"
 DOWNLOADS_JSON_NAME = "downloads.json"
 
-# Website buttons that must exist or the job fails.
-REQUIRED_IDS = ("mac-x64", "windows-x64")
+# Every official installer must exist or the job fails (no half-built Latest).
+REQUIRED_IDS = (
+    "mac-aarch64",
+    "mac-x64",
+    "windows-x64",
+    "windows-x64-portable",
+    "linux-x64-appimage",
+    "linux-x64-deb",
+    "linux-x64-rpm",
+)
 
 # source_names: first existing file wins. `{ver}` is the tag without leading v.
 INSTALLER_SPEC: tuple[dict[str, Any], ...] = (

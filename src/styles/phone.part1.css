@@ -88,6 +88,11 @@
     display: none;
   }
 
+  /* Drawer has no traffic lights / fixed pane toggle — keep a normal inset */
+  .app-shell--phone .sidebar-chrome {
+    padding-left: 10px;
+  }
+
   .app-shell--phone .sidebar.sidebar--hidden,
   .app-shell--phone .sidebar.sidebar--collapsed {
     width: min(85vw, 320px) !important;
@@ -310,6 +315,11 @@
 
   .app-shell--phone .sidebar__footer {
     min-height: 52px;
+  }
+
+  .app-shell--phone .sidebar__footer-settings {
+    width: 36px;
+    height: 36px;
   }
 
   .app-shell--phone .tree-l3__name,

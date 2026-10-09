@@ -165,6 +165,67 @@ describe("composer chip portal pops", () => {
     expect(pop!.getAttribute("aria-label")).toBe("Git worktrees");
   });
 
+  it("worktree chip lists branches and switches in place", async () => {
+    const user = userEvent.setup();
+    const onSwitchBranch = vi.fn();
+    render(
+      <ComposerWorktreeMenu
+        activePath="/code/grok-app"
+        worktrees={[
+          {
+            path: "/code/grok-app",
+            branch: "main",
+            head: "abc123",
+            isMain: true,
+            detached: false,
+            locked: false,
+            prunable: false,
+          },
+        ]}
+        worktreesAvailable={true}
+        branches={[
+          { name: "main", current: true, remote: false },
+          { name: "feat/login", current: false, remote: false },
+          { name: "origin/only-remote", current: false, remote: true },
+        ]}
+        branchesAvailable={true}
+        variant="context"
+        labels={{
+          worktrees: "Git worktrees",
+          worktreesEmpty: "No linked worktrees",
+          worktreesUnavailable: "Worktrees unavailable",
+          worktreeCurrent: "current",
+          worktreeMain: "main",
+          worktreeDetached: "detached",
+          worktreeTip: "Switch git worktree / branch",
+          worktreeNew: "New worktree",
+          worktreeNewChat: "New worktree & chat",
+          worktreeGc: "Clean stale worktrees",
+          branches: "Branches",
+          branchesEmpty: "No branches",
+          branchesSearchPlaceholder: "Filter branches…",
+          branchRemote: "remote",
+        }}
+        onSwitch={vi.fn()}
+        onSwitchBranch={onSwitchBranch}
+        onCreate={vi.fn()}
+        onCreateAndChat={vi.fn()}
+        onGc={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch git worktree / branch" }),
+    );
+    expect(screen.getByText("Branches")).toBeTruthy();
+    expect(screen.getByText("feat/login")).toBeTruthy();
+    expect(screen.getByText("origin/only-remote")).toBeTruthy();
+    await user.click(screen.getByRole("menuitem", { name: /feat\/login/ }));
+    expect(onSwitchBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "feat/login", remote: false }),
+    );
+  });
+
   it("context usage chip portals its ctx pop on the same layer", async () => {
     const user = userEvent.setup();
     const display: ContextUsageDisplay = {
@@ -414,6 +475,8 @@ describe("composer chip portal pops", () => {
     expect(windowFly.side).toBe("left");
     expect(windowFly.pos.top).toBe(292);
     expect(windowFly.pos.right).toBe(1024 - 720 + 8);
+    expect(windowFly.pos.width).toBe(260);
+    expect(windowFly.pos.maxWidth).toBe(260);
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
     const tight = {
       ...hub,
@@ -491,7 +554,61 @@ describe("composer chip portal pops", () => {
     expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
   });
 
-  it("shows grok-4.6 xhigh as xhigh and keeps Advanced to models only", async () => {
+  it("keeps context-window Save reachable in the Advanced flyout", async () => {
+    const user = userEvent.setup();
+    const onContextWindow = vi.fn();
+    render(
+      <ComposerModelMenu
+        modelId="test-model"
+        effort="high"
+        contextWindow={500000}
+        contextWindowEditable
+        onContextWindow={onContextWindow}
+        labels={{
+          model: "Model",
+          effort: "Effort",
+          effortHigh: "High",
+          effortMedium: "Medium",
+          effortLow: "Low",
+          modelSearchPlaceholder: "Search models",
+          modelSearchEmpty: "No models",
+          modelGroupOfficial: "Official",
+          contextWindow: "Context window",
+          contextWindowOfficial: "official",
+          contextWindowCustom: "custom",
+          contextWindowPlaceholder: "tokens",
+          contextWindowSave: "Save",
+          contextWindowOfficialHint: "unknown",
+          advanced: "Advanced",
+        }}
+        onEffort={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Model" }));
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    const pop = bodyPop();
+    expect(pop).not.toBeNull();
+    const rows = pop!.querySelectorAll(".cmm__row");
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    fireEvent.mouseEnter(rows[2]!);
+    const flyout = await waitFor(() => {
+      const el = document.body.querySelector<HTMLElement>(
+        ':scope > .cmm__pop--flyout[data-kind="window"]',
+      );
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(flyout.querySelector(".cmm__window-edit")).not.toBeNull();
+    expect(flyout.querySelector(".cmm__inline-edit")).not.toBeNull();
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(save.classList.contains("cmm__inline-save")).toBe(true);
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+    await user.click(save);
+    expect(onContextWindow).toHaveBeenCalledWith(500000);
+  });
+
+  it("localizes grok-4.6 xhigh via effort i18n in composer menu", async () => {
     const user = userEvent.setup();
     render(
       <ComposerModelMenu
@@ -523,11 +640,11 @@ describe("composer chip portal pops", () => {
     await user.click(screen.getByRole("button", { name: "Model" }));
     const pop = bodyPop();
     expect(pop).not.toBeNull();
-    expect(pop!.textContent ?? "").toMatch(/Effort xhigh/);
-    expect(pop!.textContent ?? "").not.toMatch(/Extra/);
+    expect(pop!.textContent ?? "").toMatch(/Effort Extra high/);
+    expect(pop!.textContent ?? "").not.toMatch(/\bxhigh\b/);
     await user.click(screen.getByRole("button", { name: "Advanced" }));
     expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
-    expect(pop!.textContent ?? "").toMatch(/xhigh/);
-    expect(pop!.textContent ?? "").not.toMatch(/Extra/);
+    expect(pop!.textContent ?? "").toMatch(/Extra high/);
+    expect(pop!.textContent ?? "").not.toMatch(/\bxhigh\b/);
   });
 });

@@ -33,6 +33,7 @@ import { reconcileSessionState } from "@/lib/sessionPhase";
 import { migrateDraftTurnClock } from "@/lib/turnClock";
 import { isSameView, shouldAdoptView, type ViewFocus } from "@/lib/viewFocus";
 import { useLiveMapWhen } from "@/hooks/useSessionLiveMap";
+import { SESSION_CONNECT_CLAIM_WAIT_MS } from "@/lib/sessionConnectTimeout";
 
 type TFn = ReturnType<typeof createT>;
 
@@ -206,7 +207,7 @@ export function useSessionConnect(opts: {
         const waitStart = Date.now();
         while (
           connectingBySessionRef.current.has(connectKey) &&
-          Date.now() - waitStart < 120_000
+          Date.now() - waitStart < SESSION_CONNECT_CLAIM_WAIT_MS
         ) {
           await new Promise((r) => setTimeout(r, 50));
           const live = h.liveHostRef.current;
@@ -219,7 +220,16 @@ export function useSessionConnect(opts: {
             return preferredId;
           }
         }
-        if (connectingBySessionRef.current.has(connectKey)) return null;
+        if (connectingBySessionRef.current.has(connectKey)) {
+          console.warn("[session] connect_claim_timeout", {
+            sessionId: preferredId,
+            budgetMs: SESSION_CONNECT_CLAIM_WAIT_MS,
+          });
+          if (h.viewingSessionIdRef.current === preferredId) {
+            h.setLocalError(h.tr("session.connectClaimTimedOut"));
+          }
+          return null;
+        }
       }
       if (!claimSessionConnection(preferredId)) return null;
       ensureConnectCountRef.current += 1;
@@ -330,17 +340,36 @@ export function useSessionConnect(opts: {
           shouldAdoptView(originView, h.currentViewFocus(), snap.sessionId)
         ) {
           h.viewingSessionIdRef.current = snap.sessionId;
-          h.setSession((prev) => ({
-            ...snap,
-            state: reconcileSessionState(snap.state, prev.state),
-          }));
+          // Mid-send connect paints Host Ready before sessionSend. Keep the
+          // optimistic streaming busy so Stop stays up with no Send flash.
+          const sendKey = queueSessionKey(snap.sessionId);
+          const draftKey = queueSessionKey(null);
+          const preserveStreaming =
+            h.sendInFlightBySessionRef.current.has(sendKey) ||
+            h.sendInFlightBySessionRef.current.has(draftKey);
+          h.setSession((prev) => {
+            const state = reconcileSessionState(snap.state, prev.state, {
+              preserveStreaming,
+            });
+            return { ...snap, state };
+          });
+          const mapState =
+            preserveStreaming && snap.state === "ready"
+              ? ("streaming" as const)
+              : snap.state;
           h.setLiveMap((prev) =>
             projectHostIntoLiveMap(prev, {
               sessionId: snap.sessionId,
-              state: snap.state,
-              streamingMessageId: snap.streamingMessageId,
+              state: mapState,
+              streamingMessageId:
+                mapState === "streaming" ? snap.streamingMessageId : null,
             }),
           );
+          if (mapState === "streaming" && snap.state !== "streaming") {
+            const held = { ...snap, state: "streaming" as const };
+            h.setLiveHost(held);
+            h.liveHostRef.current = held;
+          }
         }
         if (snap.lastError || snap.state !== "ready") {
           const code = snap.lastError?.code ?? "AGENT_CRASHED";
@@ -389,7 +418,7 @@ export function useSessionConnect(opts: {
         try {
           await api.sessionStop(sid);
         } catch {
-          /* Host may not have bound ACP yet */
+          /* Stop timed out or Host not bound — still force-connect below. */
         }
       }
       const next = await ensureConnected({ force: true, sessionId: sid });

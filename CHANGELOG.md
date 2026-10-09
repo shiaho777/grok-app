@@ -13,7 +13,381 @@ See `docs/llm-wiki/release.md`.
 
 ## [Unreleased]
 
+## [0.2.36] - 2026-09-17
+
+> **Highlight:** Pin chats globally, copy commands and diffs, and keep Shared session data.
+>
+> **中文 · 亮点：** 置顶对话到列表最上，可复制命令和 diff，共享会话数据会记住。
+
+### Added
+- Project rules list this project, ~/.agents, and the live agent home. Missing files stay faded at the bottom.
+- Shell commands show the full command, with one-click copy of command and output.
+- File diffs on a turn and in Review can be copied in one click.
+- Chat file cards can show the file name only, or the path as the model wrote it. Hover shows the full path immediately.
+- Settings → Extensions can type project/home rules and slash commands as real CLI files.
+- Session menu can send the current work to a new task with a short handoff brief.
+- Memory embedding can set a separate OpenAI-compatible Base URL and key.
+
+**中文 · 新增**
+- 项目规则会列出本项目、~/.agents 和当前 agent-home。未创建的会变淡并排在下面。
+- 终端命令会显示完整命令，并可一键复制命令和输出。
+- 回合变更和 Review 里的文件 diff 可一键复制。
+- 对话里的文件路径可只显示文件名，或按模型原文显示。悬停会立刻显示完整路径。
+- 设置 → 扩展可直接填写项目/主目录规则和斜杠命令，写入 CLI 真实文件。
+- 会话菜单可将当前工作发到新任务，并带上简短交接说明。
+- 记忆 embedding 可单独填写 OpenAI 兼容的 Base URL 和密钥。
+
 ### Fixed
+- Shared session data mode is remembered, unless a custom provider needs independent. Independent still uses the app data folder, not always ~/.grok-app (#1228).
+- You can pin a generating chat, and pinned chats sit at the top of the list. The pin control stays next to the spinner (#1229).
+- The left project list stays smoother when many folders are open. Crowded sidebars collapse once; expanding every folder is remembered (#1230).
+- Project rules no longer list the same AGENTS.md three times on macOS.
+- Sending or finishing a chat moves it to the top of that project's list. Pinned chats stay first.
+- Esc in an image preview closes the preview instead of stopping the turn.
+- Sign out now clears expired official credentials even when the CLI reports success.
+- Official Use is no longer stolen by a custom provider whose id is `grok`.
+- Rewind after restart no longer uses a Host bubble index the new agent does not have.
+- Extra-root write sandbox profiles are used on warm reconnect, not only the first spawn.
+- The Windows desktop pet no longer appears as a second Grok taskbar icon.
+- Pet chips no longer glue another chat’s text; finished ones stay until opened.
+- Official high-effort turns wait longer before the empty-thinking stall banner.
+- File-path chips keep the model’s original path when the file-name option is off.
+
+**中文 · 修复**
+- 选共享后会记住；只有自定义渠道必须独立时才保持独立。独立模式用应用数据目录，不一定是 ~/.grok-app（#1228）。
+- 生成中仍可置顶，置顶对话会出现在列表最上方。图钉不再被转圈挡住（#1229）。
+- 左侧项目很多且都展开时，滚动会更顺。拥挤侧栏只自动收起一次；全部展开后会记住（#1230）。
+- 项目规则在 macOS 上不再把同一份 AGENTS.md 列成三条。
+- 发送或完成一轮对话后，该会话会排到所属项目列表顶部。置顶会话仍在最前。
+- 图片预览打开时按 Esc 会关掉预览，而不会停止当前生成。
+- 官方凭证已过期时，退出登录仍会清掉本地凭据。
+- 自定义渠道 id 为 `grok` 时，不会再挡住官方「使用」。
+- 进程重启后回退对话，不再把 Host 气泡序号发给新的 agent 会话。
+- 附加根目录的可写沙箱配置会在热重连时继续使用，不只第一次拉起。
+- Windows 桌面宠物不再占用第二个 Grok 任务栏图标。
+- 宠物任务芯片不再粘上别的对话文字，完成后会留到你点开。
+- 官方高推理在空思考占位时，会等更久才弹出卡住提示。
+- 关闭「只显示文件名」时，路径卡片会保留模型写的原文，不会换成磁盘全路径。
+
+## [0.2.35] - 2026-09-13
+
+> **Highlight:** Multi-root workspaces, shared-cookie Google login, and steadier chat follow.
+>
+> **中文 · 亮点：** 多根工作区、共享 Cookie 的 Google 登录，以及更稳的聊天贴底跟随。
+
+### Added
+- Multi-root workspaces let a chat declare extra folders, with optional Independent write.
+- Doctor reports each multi-root workspace capability and reason.
+- Settings → Appearance adds solid-color Morandi wallpapers and a virtual-scroll toggle.
+- The composer branch chip can switch git branches in the current folder. Remote-only rows create a local tracking branch; a branch already checked out in another worktree opens that worktree instead.
+
+**中文 · 新增**
+- 多根工作区可为会话声明附加文件夹，独立模式可开写。
+- Doctor 会报告每个多根工作区的能力状态与原因。
+- 设置 → 外观支持莫兰迪纯色壁纸，并可关闭聊天虚拟滚动。
+- 输入框上的分支 chip 可在当前目录切换 git 分支。仅远程存在的分支会建本地跟踪分支；已在其他 worktree 检出的则切到那个 worktree。
+
+### Fixed
+- Typing `@/goal` no longer becomes a missing-file chip. The line stays as text (#1197).
+- Windows PNG previews no longer claim a good file is corrupt (#1198).
+- The account menu no longer repeats the quota card when only one official account is saved.
+- Saving project rules no longer kills another chat's background agent mid-turn.
+- Trusted-project chats no longer reuse a prewarm process that skipped folder trust.
+- Switching git branches is blocked while an agent turn is still running in that folder.
+- Google sign-in uses a shared-cookie window and reloads the embedded browser.
+- Session rules apply on the next agent turn; trusted projects load AGENTS.md.
+- Windows IME candidate windows stay nearer the composer while composing (#1170).
+- Thinking streams keep following the chat tail after a brief trackpad pause (#1172).
+- Tray Quit on Windows arms the exit failsafe before trying to show the window.
+- Slow trackpad scrolling up from the chat tail no longer snaps back or flashes.
+- Wallpaper frost stays stable while streaming on macOS.
+- The user menu lists every saved official account and remaining quota again.
+- Math formulas render with one matching KaTeX version again.
+- Wallpaper no longer flashes black while streaming or following the chat tail.
+- Reconnect from the error banner always uses the latest connection state.
+- Imagine portrait thumbnails stay contained when the wallpaper window narrows.
+- What's New now lists every entry; some were cut off before.
+- Generated wallpaper stays visible when library indexing fails and can be saved again.
+- Local video details now use the file's measured dimensions and duration.
+
+**中文 · 修复**
+- 输入 `@/goal` 不再变成失效文件 chip，该行会保留为正文（#1197）。
+- Windows 本地 PNG 预览不再误报「文件可能已损坏」（#1198）。
+- 仅一个官方账号时，用户菜单不再重复显示额度卡片。
+- 保存项目规则时，不再打断同项目另一聊天后台进行中的 agent 回合。
+- 已信任项目不会复用未带文件夹信任的预热进程，AGENTS.md 可正确加载。
+- 同文件夹仍有 agent 回合在跑时，禁止切换 git 分支。
+- Google 登录改用共享 Cookie 窗口，关闭后刷新内嵌页。
+- 会话规则在下一轮生效；已信任项目会加载 AGENTS.md。
+- Windows 组字时候选栏更贴近输入区（#1170）。
+- 思考流式增高时，短暂停顿后内容区会继续贴底跟随（#1172）。
+- Windows 托盘退出会先启动退出保险，再尝试显示主窗口。
+- 从聊天底部慢慢上滑时，不再被弹回底部或闪一下。
+- 流式输出时壁纸霜化层保持稳定。
+- 用户菜单再次列出本机已保存的官方账号及各自剩余额度。
+- 数学公式恢复 CSS 与 JS 同版本渲染。
+- 流式输出和自动跟随聊天底部时，壁纸不再闪黑。
+- 错误横幅上的重连始终使用最新的连接状态。
+- 壁纸窗口缩小时，Imagine 纵向缩略图不再挤压错位。
+- 「新功能」弹窗不再漏掉部分条目。
+- 生成壁纸在图库索引失败时仍会显示，并可直接重试保存。
+- 本地视频详情现在显示文件实测的尺寸与时长。
+
+### Changed
+- Ctrl+Tab fills the selected chat row. Busy chats show the same spinner as the sidebar.
+- About shows the git short hash when the build is not an exact release tag.
+- The theme editor modal loads on demand instead of joining app startup.
+- Bundled KaTeX math fonts ship as woff2 only, trimming the install size.
+- Settings reads and writes run on the blocking pool, off the async command path.
+
+**中文 · 变更**
+- Ctrl+Tab 预选行有背景高亮。进行中的对话显示与侧栏相同的转圈。
+- 构建不是精确的 release tag 时，About 显示 git short hash。
+- 主题编辑器改为按需加载，不再拖累应用启动。
+- 打包内的 KaTeX 数学字体只保留 woff2 格式，安装包更小。
+- 设置的读写改走阻塞线程池，异步命令不再被设置文件锁卡住。
+
+## [0.2.34] - 2026-09-09
+
+> **Highlight:** Bigger wallpaper sources, stronger Windows freeze fixes, safer chat thumbs.
+>
+> **中文 · 亮点：** 壁纸来源大扩展，Windows 卡死修复更完整，聊天缩略图也挡住内网拉取。
+
+### Fixed
+- Sending with images no longer shows two identical user bubbles while streaming. Also covers attachments (#1119, #1124).
+- Idle reconnect no longer paints the same user turn twice. Host and optimistic rows no longer race (#1124).
+- Custom relays show retry progress under Thinking instead of a blank working state (#1126).
+- Wallpaper search keeps favorites and local paths across pages. Multi-source gallery layout is restored (#1120).
+- Switching wallpaper sources no longer cancels in-flight search. ZDR blocks show a clear image-to-video hint (#1121).
+- Long chats stay smoother on a Windows touchscreen. Slow pans no longer hitch while the finger is down (#1122).
+- Windows no longer freezes when stream IPC or tool journals ran under session locks.
+- Turn errors and cancels release the session lock before disk and UI work.
+- Opening a chat times out stuck history loads and keeps the cached transcript.
+- Connect retry no longer waits unbounded on a stuck claim or stop.
+- Windows agent kill reaps the process tree without freezing while taskkill waits.
+- Chat remote image thumbs block private and loopback targets like wallpaper media.
+- One busy terminal tab no longer blocks writes or resize on other tabs.
+- Official login and wallpaper OAuth restore from agent-home if `~/.grok` auth was wiped.
+- Windows titlebar drag moves the window again on older WebView2 (#1075).
+- Feishu remote-control setup shows the publish / availability guide (same as Lark).
+- Search no longer applies results after you close the palette (#1078).
+- Local media previews bind to browser-safe ports (#1076).
+- Windows Explorer drop cleans up failed transfers more reliably (#1077).
+- Legacy proxy mode `use` migrates the same way in UI and Host (#1079).
+- Image lightbox close stays closed when a late load finishes (#1081).
+- Wallpaper X search drains CLI output so hung pipes time out cleanly (#1086).
+- Wallpaper X results drop non-image pages and rank clearer media first (#1085).
+- Wallpaper X search can be cancelled and shows prepare / search / validate progress (#1087).
+- Opening a file in Review keeps the macOS title bar visible. Focus scrolls only inside Review (#1041).
+- Advanced context-window Save stays fully clickable. The flyout no longer clips the button (#1047).
+- Linux AppImage prefers host WebKitGTK to avoid black screens and SIGBUS on quit. Helpers stay on disk so FUSE unmount is safe (#539).
+- Binding QR codes are generated locally without sharing login links.
+- Plugin authorization keeps secrets out of process command lines.
+
+**中文 · 修复**
+- 带图发送时不再出现两条相同的用户气泡。附件发送同样修复（#1119、#1124）。
+- 闲置重连后不再把同一条用户消息画两次。Host 与乐观气泡不再竞态（#1124）。
+- 自定义中转在「思考中」下显示重试进度，不再空白「工作中」（#1126）。
+- 壁纸搜索分页时保留收藏与本地路径。多来源图库布局已恢复（#1120）。
+- 切换壁纸来源不再取消进行中的搜索。ZDR 会给出明确的图生视频提示（#1121）。
+- 长会话在 Windows 触屏上滑动更跟手。不抬手慢滑也不再一顿一顿（#1122）。
+- Windows 上不再因会话锁内发流式事件或写工具日志而整窗卡死。
+- 回合错误与取消会先放开会话锁，再写磁盘和推界面。
+- 打开会话时历史加载会超时，并保留已有缓存内容。
+- 重连不再因卡住的连接占用或 Stop 而无限等待。
+- Windows 结束 Agent 会清进程树，等待 taskkill 时不再卡住 Host。
+- 聊天远程缩略图与壁纸一样拦截内网与回环地址。
+- 一个繁忙终端标签页不再挡住其他标签页的输入或缩放。
+- `~/.grok` 凭据被清掉时，官方登录与壁纸 OAuth 会从 agent-home 恢复。
+- Windows 标题栏在旧版 WebView2 上又能拖动窗口（#1075）。
+- 飞书远程控制显示与 Lark 相同的「发布 / 可用性」引导步骤。
+- 关掉搜索面板后，迟到的结果不再写回（#1078）。
+- 本地媒体预览绑定到浏览器安全端口（#1076）。
+- Windows 资源管理器拖放在失败时更干净地释放（#1077）。
+- 旧代理模式 `use` 在界面与 Host 侧迁移一致（#1079）。
+- 图片预览关闭后，迟到的加载不会再把它打开（#1081）。
+- 壁纸 X 搜索并行排空 CLI 输出，管道堵死时能按时退出（#1086）。
+- 壁纸 X 结果会丢掉非图片页，并优先更清晰的媒体（#1085）。
+- 壁纸 X 搜索可取消，并显示准备 / 搜索 / 校验进度（#1087）。
+- 在 Review 中打开文件时，macOS 标题栏保持可见。只滚动 Review 内部列表（#1041）。
+- Advanced 里上下文窗口的「保存」可正常点到。浮层不再裁掉按钮（#1047）。
+- Linux AppImage 优先用本机 WebKitGTK，避免黑屏和退出时 SIGBUS。子进程不再映射在 squashfs 上（#539）。
+- 扫码绑定的二维码在本地生成，登录链接不再发给第三方。
+- 插件授权密钥不再出现在进程命令行中。
+
+### Added
+- Ctrl+Tab shows a recent-chat list while you hold Ctrl. Release Ctrl to open the highlighted chat (#1125).
+- Chat markdown renders Mermaid diagrams from fenced code blocks.
+- Wallpaper X can use Responses search with a clear fallback to CLI (#1088).
+- Wallpaper X Responses search shows validated images in batches as paths finish (#1089).
+- Wallpaper X Responses search reuses recent verified results for the same query (#1090).
+- Wallpaper X Responses search can load more images without clearing the gallery (#1091).
+- Wallpaper sources add Openverse and Pexels search with paging and Pexels key setup (#1096).
+- Openverse and Pexels prefetch the next page after a successful search (#1097).
+- Wallpaper sources add a separate Web image search with safe preview download (#1099).
+- Wallpaper sources can browse your Grok Saved album after a secure sign-in check (#1103).
+
+**中文 · 新增**
+- 按住 Ctrl+Tab 会弹出最近对话列表。松开 Ctrl 打开高亮的那一条（#1125）。
+- 聊天 Markdown 会渲染 fenced Mermaid 流程图。
+- 壁纸 X 可用 Responses 搜索，失败时清楚回退到 CLI（#1088）。
+- 壁纸 X 的 Responses 搜索会按完成批次逐步显示已校验图片（#1089）。
+- 壁纸 X 的 Responses 搜索会复用同一查询的近期已验证结果（#1090）。
+- 壁纸 X 的 Responses 搜索可加载更多，且不清空已有图库（#1091）。
+- 壁纸来源新增 Openverse / Pexels 搜索、分页与 Pexels Key 设置（#1096）。
+- Openverse / Pexels 在成功搜索后会预取下一页（#1097）。
+- 壁纸来源新增独立的 Web 图片搜索，并安全下载预览（#1099）。
+- 壁纸来源可在安全登录校验后浏览 Grok Saved 相册（#1103）。
+
+### Changed
+- Left sidebar toggle on Windows snaps instead of sliding the chat column. Opening it skips growing a window that already fits.
+- Finished Worked-for rails fold after the turn. Failed tools stay as one-line excerpts.
+- Sent quotes show the excerpt and comment in the bubble, not a notes chip.
+- Account quota sits in the user menu again, with remaining % beside the name.
+- Streaming chat, heatmap hover, and SSH sidebar refresh do less re-rendering (#1073).
+- Default workspace uses a house icon in the sidebar and composer (#1069).
+- Sidebar Other now uses the same name as the composer chip: Default workspace (#1067).
+- Startup skips TipTap and markdown preloads; Office and Settings load on demand (#1055, #1063).
+
+**中文 · 变更**
+- Windows 上开关左侧栏不再把聊天列跟着宽度滑动。窗口已经够宽时展开也不再拉大窗口。
+- 结束后的「Worked for」工具栏会收起。失败步骤保留为一行摘要。
+- 发送后的引用在气泡里直接显示摘录和评论，不再收成「N 条注释」。
+- 额度卡片回到用户菜单顶部，名字旁显示剩余百分比。
+- 流式对话、热力图像悬停与 SSH 侧栏刷新减少无效重渲染（#1073）。
+- 默认工作区在侧栏和输入框改用小房子图标（#1069）。
+- 侧栏「其他会话」与输入框统一为「默认工作区」（#1067）。
+- 启动不再预载 TipTap / markdown；Office 与设置页按需加载（#1055、#1063）。
+
+## [0.2.33] - 2026-09-06
+
+> **Highlight:** Windows installers are back, with composer shortcuts and worktree GC fixes.
+>
+> **中文 · 亮点：** Windows 安装包恢复上架，输入框快捷键与 worktree 清理也修好了。
+
+### Fixed
+- Windows setup and portable packages publish again after the 0.2.32 build break (#1039).
+- New chat and Settings shortcuts work while the message box is focused (#1035).
+- Worktree GC confirm actually runs prune instead of only closing the dialog (#1037).
+
+**中文 · 修复**
+- Windows 安装版与绿色版重新随 Release 发布（#1039）。
+- 光标在消息输入框时，新建对话和设置快捷键也能用（#1035）。
+- Worktree 清理点确认会真正执行 prune，而不只是关掉对话框（#1037）。
+
+### Changed
+- Release CI fails the gate unless every macOS, Windows, and Linux installer is on the tag.
+
+**中文 · 变更**
+- 发版门禁要求 macOS / Windows / Linux 安装包齐全，缺任一平台会失败。
+
+## [0.2.32] - 2026-09-06
+
+> **Highlight:** Windows drag-drop and Mac Doubao voice work again, with leaner tool memory.
+>
+> **中文 · 亮点：** Windows 拖放与 Mac 豆包语音恢复可用，工具内存也更省。
+
+### Changed
+- The quote toolbar appears after text selection settles, keeping chat selection smooth.
+- Slash and @ detection pause while the window is hidden or the input is not focused.
+- Long chats stay smoother when no session files changed.
+- The quote comment box uses the same Enter / Ctrl+Enter shortcut as the composer (#1015).
+- Running tool steps stay collapsed by default to reduce memory use (#1018).
+- Completed tool output uses less memory in long turns (#1029).
+
+**中文 · 变更**
+- 对话划词结束后再显示引用工具栏，对话选取更顺畅。
+- 窗口隐藏或输入框未聚焦时，斜杠和 @ 探测会停。
+- 没有文件变更时，长对话保持流畅。
+- 划词评论框与输入框共用 Enter / Ctrl+Enter 发送快捷键（#1015）。
+- 工具运行中默认折叠，减少内存占用（#1018）。
+- 工具结束后占用更少内存，长回合更顺畅（#1029）。
+
+### Fixed
+- Mac Control+Return steers a live turn again (#1023).
+- Windows Explorer drag-drop works again for projects and chat attachments (#1017).
+- Image prompts no longer paint two user bubbles (#1021).
+- Enter in the composer sends a quote card even when the input is empty (#1015).
+- Wide Markdown tables now scroll horizontally without fading on the right (#1020).
+- Mac Doubao IME Fn / Globe voice works in the chat composer again (#1030).
+
+**中文 · 修复**
+- Mac 上 Control+Return 又能引导当前回合（#1023）。
+- Windows 资源管理器拖放项目和附件恢复可用（#1017）。
+- 带图发送不再画出两条用户气泡（#1021）。
+- 输入框为空时按 Enter 也能只发送引用卡片（#1015）。
+- 过宽的 Markdown 表格支持横向滚动，右侧不再变淡（#1020）。
+- Mac 上豆包输入法按 Fn / Globe 可唤起语音（#1030）。
+
+## [0.2.31] - 2026-09-04
+
+> **Highlight:** See which files the agent edited, then expand a highlighted diff in chat.
+>
+> **中文 · 亮点：** 回合结束后能看到改了哪些文件，并在对话里展开高亮 diff。
+
+### Added
+- Chat shows expandable cards for files the agent edited. Open Review from a card for the focused diff (#998).
+- OrcaRouter is available as a custom-provider preset (#1004).
+
+**中文 · 新增**
+- 助手改完文件后，对话里会出现可展开的改动卡片。也可从卡片打开 Review 看聚焦 diff（#998）。
+- 自定义供应商画廊增加了 OrcaRouter 一键预设（#1004）。
+
+### Changed
+- In-app CLI upgrades warn when a newer App is available. You can still continue after confirming (#1009).
+- Project folder actions stay hidden until you hover the row.
+- Long streaming replies paint more smoothly near the end of the message.
+
+**中文 · 变更**
+- 应用内升级 CLI 时，若已有新版 App 会先提醒。确认后仍可继续升级（#1009）。
+- 项目文件夹右侧操作按钮改为悬停才显示。
+- 长回复流式输出接近结尾时更顺滑。
+
+### Fixed
+- Settings render errors no longer blank the whole window. The Settings stage keeps a Retry panel (#1006).
+- Custom-model chats no longer switch models between turn 1 and turn 2 (#1000).
+- Windows can add a project by dropping a folder on the sidebar again (#999).
+- Chat no longer crashes mid-stream with React error #30 when a turn fails (#1002).
+- Phone mirror turns finish on the phone, and the desktop shows that message (#1001).
+
+**中文 · 修复**
+- 设置页渲染出错时不再整窗空白。设置舞台会留下可重试面板（#1006）。
+- 自定义模型会话不会再在第一轮与第二轮之间悄悄换模型（#1000）。
+- Windows 又能把文件夹拖到侧栏加为项目（#999）。
+- 回合失败时聊天区不再因 React #30 崩溃（#1002）。
+- 手机镜像回合会在手机端正常结束，电脑也能看到手机发出的消息（#1001）。
+
+## [0.2.30] - 2026-09-02
+
+> **Highlight:** Install plugins from a local folder, and add X API from Recommended.
+>
+> **中文 · 亮点：** 设置里可从本地装插件，推荐里可一键加 X API。
+
+### Added
+- Settings can install a plugin from a local folder or git URL.
+- Installed plugins that ship MCP appear under Extensions → MCP.
+- X API is a recommended plugin you can install from Settings.
+- You can authorize the X API plugin from the MCP list.
+
+**中文 · 新增**
+- 设置 → 插件可以从本地文件夹或 git 安装。
+- 带 MCP 的已装插件会出现在扩展 → MCP。
+- 推荐插件里增加了 X API。
+- 可在 MCP 列表里给 X API 授权。
+
+### Changed
+- More UI languages fill in strings that still matched English. Remaining locales including Japanese, Korean, Russian, Ukrainian, and Tamil follow the locale (#972–#975, #977–#980).
+- Background git and worktree Host work stays off the async runtime. Status, diffs, review loads, and worktree ops no longer stall other commands (#988, #990–#993).
+- Opening a chat with media settles with fewer polls. Reveal still waits on load events; the safety net is slower (#989).
+
+**中文 · 变更**
+- 更多界面语言补上了原先还跟英文重复的可见文案。含日/韩/俄/乌/泰米尔等剩余语言跟语言走（#972–#975、#977–#980）。
+- 后台 git / worktree 更省。状态、diff、Review 与 worktree 操作不再堵其它 Host 命令（#988、#990–#993）。
+- 打开带媒体的会话少扫 DOM。仍靠加载事件揭开，兜底轮询更慢（#989）。
+
+### Fixed
+- Sidebar header is now one row: logo, search, and pane toggle. Search sits next to the toggle on the right (#996).
+- Desktop composer now shows localized labels for all reasoning tiers. The top tier no longer shows a raw internal id (#994).
 - Project chats no longer inherit the default-workspace sandbox. Writes inside the selected project work again (#986).
 - Expanded tool steps no longer stack title and command on one line. The last row in a Worked-for list keeps its real height (#983).
 - Thinking no longer stays on screen as the final reply. The real answer paints in place; switching chats is not required (#968).
@@ -21,8 +395,11 @@ See `docs/llm-wiki/release.md`.
 - Queue edit and other glass dialogs stay above the embedded browser. Native webviews hide while the modal is open (#976).
 - Doctor and the agent dashboard no longer use native dropdowns. They use the same app Select as settings (#981).
 - Screen-reader labels for the files pane and setup steps follow the UI language. They no longer stay English (#982).
+- Wallpaper crop in the theme editor matches the main window.
 
 **中文 · 修复**
+- 桌面侧栏顶栏收成一行，搜索与侧栏按钮同在右侧。折叠时仍可在主栏左上角打开侧栏（#996）。
+- 桌面 Composer 推理强度最高档已与其它档位一样显示本地化名称。例如最高档显示「极高」（#994）。
 - 项目会话不再误用默认工作区的沙箱。在选中项目里写文件又能成功了（#986）。
 - 展开的工具步骤不再把标题和命令叠在同一行。工作列表最后一行会按真实高度排开（#983）。
 - 思考结束后不再把思考过程当成最终回复。正文会直接画出来，不用切走再切回来（#968）。
@@ -30,16 +407,7 @@ See `docs/llm-wiki/release.md`.
 - 打开内置浏览器时，队列编辑等毛玻璃弹窗不再被挡住。弹窗打开期间会暂时藏起原生页面（#976）。
 - Doctor 和智能体面板不再用系统原生下拉。跟设置一样走项目 Select（#981）。
 - 文件面板和设置向导的读屏标签跟界面语言走。不再固定英文（#982）。
-
-### Changed
-- More UI languages fill in strings that still matched English. Remaining locales including Japanese, Korean, Russian, Ukrainian, and Tamil follow the locale (#972–#975, #977–#980).
-- Background git status work is quieter. The dirty chip pauses while the window is hidden, and Host runs status off the async runtime (#988, #990).
-- Opening a chat with media settles with fewer polls. Reveal still waits on load events; the safety net is slower (#989).
-
-**中文 · 变更**
-- 更多界面语言补上了原先还跟英文重复的可见文案。含日/韩/俄/乌/泰米尔等剩余语言跟语言走（#972–#975、#977–#980）。
-- 后台 git status 更省。窗口隐藏时脏标记停轮询，Host 也不再堵在 async 线程上（#988、#990）。
-- 打开带媒体的会话少扫 DOM。仍靠加载事件揭开，兜底轮询更慢（#989）。
+- 主题编辑器里的壁纸裁切跟主窗口比例一致。
 
 ## [0.2.29] - 2026-08-31
 

@@ -119,7 +119,7 @@ describe("classifyWorkspaceGitUnavailable", () => {
 });
 
 describe("resolveReviewEmptyState", () => {
-  it("not_git when non-git and no session rows", () => {
+  it("not_git when non-git and no session rows and no files", () => {
     const s = resolveReviewEmptyState({
       isGitProject: false,
       sessionCount: 0,
@@ -130,6 +130,29 @@ describe("resolveReviewEmptyState", () => {
     });
     expect(s.kind).toBe("not_git");
     expect(s.titleKey).toBe("side.review.notGit");
+  });
+
+  it("ok for non-git when pinned/session files exist (#998)", () => {
+    expect(
+      resolveReviewEmptyState({
+        isGitProject: false,
+        sessionCount: 0,
+        projectPath: "/p",
+        loading: false,
+        fileCount: 1,
+        visibleCount: 1,
+      }).kind,
+    ).toBe("ok");
+    expect(
+      resolveReviewEmptyState({
+        isGitProject: false,
+        sessionCount: 2,
+        projectPath: "/p",
+        loading: false,
+        fileCount: 2,
+        visibleCount: 2,
+      }).kind,
+    ).toBe("ok");
   });
 
   it("load_error over empty when classified", () => {

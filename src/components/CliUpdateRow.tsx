@@ -15,6 +15,11 @@ import {
   normalizeCliChannel,
   type CliSwitchableChannel,
 } from "@/lib/cliUpdateChannel";
+import {
+  isAppBehindInstallError,
+  isCliUpdateAppBehind,
+  stripAppBehindErrorPrefix,
+} from "@/lib/cliUpdateAppBehind";
 import { GlassModal } from "@/components/GlassModal";
 
 type BusyKind =
@@ -27,7 +32,13 @@ type BusyKind =
 
 type ConfirmAction =
   | { kind: "switch"; channel: CliSwitchableChannel }
-  | { kind: "pin"; version: string };
+  | { kind: "pin"; version: string }
+  | {
+      kind: "app-behind";
+      /** Pending install opts after the user acknowledges App skew (#1009). */
+      opts?: api.CliUpdateInstallOpts | null;
+      busyKind: BusyKind;
+    };
 
 export function CliUpdateRow({
   t,
@@ -101,19 +112,38 @@ export function CliUpdateRow({
   const runInstall = async (
     opts?: api.CliUpdateInstallOpts | null,
     busyKind: BusyKind = "install",
+    acknowledgedAppBehind = false,
   ) => {
     if (!api.isTauri()) {
       setError("not in Tauri");
+      return;
+    }
+    // Soft gate: warn when App is behind before pulling a newer CLI (#1009).
+    if (!acknowledgedAppBehind && isCliUpdateAppBehind(result)) {
+      setConfirm({ kind: "app-behind", opts: opts ?? null, busyKind });
       return;
     }
     setBusy(busyKind);
     setError(null);
     setInstallMsg(null);
     setConfirm(null);
+    const installOpts: api.CliUpdateInstallOpts = {
+      ...(opts ?? {}),
+      acknowledgeAppBehind: acknowledgedAppBehind || opts?.acknowledgeAppBehind,
+    };
     try {
-      const r = await api.cliUpdateInstall(opts ?? null);
+      const r = await api.cliUpdateInstall(installOpts);
       if (r.ok === false) {
-        setError(r.message || r.error || "update failed");
+        const failMsg = r.message || r.error || "update failed";
+        if (isAppBehindInstallError(failMsg) && !acknowledgedAppBehind) {
+          setConfirm({ kind: "app-behind", opts: opts ?? null, busyKind });
+          return;
+        }
+        setError(
+          isAppBehindInstallError(failMsg)
+            ? stripAppBehindErrorPrefix(failMsg)
+            : failMsg,
+        );
         return;
       }
       const version =
@@ -161,7 +191,13 @@ export function CliUpdateRow({
       }
       onAfterInstall?.();
     } catch (e) {
-      setError(String(e));
+      if (isAppBehindInstallError(e) && !acknowledgedAppBehind) {
+        setConfirm({ kind: "app-behind", opts: opts ?? null, busyKind });
+        return;
+      }
+      setError(
+        isAppBehindInstallError(e) ? stripAppBehindErrorPrefix(e) : String(e),
+      );
     } finally {
       setBusy(null);
     }
@@ -203,7 +239,9 @@ export function CliUpdateRow({
         ? t("settings.cliChannel.pinConfirmTitle", {
             version: confirm.version,
           })
-        : t("settings.cliUpdate");
+        : confirm?.kind === "app-behind"
+          ? t("settings.cliUpdate.appBehindTitle")
+          : t("settings.cliUpdate");
 
   const confirmBody =
     confirm?.kind === "switch"
@@ -214,7 +252,18 @@ export function CliUpdateRow({
         ? t("settings.cliChannel.pinConfirmMsg", {
             version: confirm.version,
           })
-        : "";
+        : confirm?.kind === "app-behind"
+          ? t("settings.cliUpdate.appBehindMsg", {
+              app: String(result?.appVersion || "—"),
+              latestApp: String(
+                result?.latestAppVersion || result?.minAppVersion || "—",
+              ),
+              minApp: String(result?.minAppVersion || "—"),
+              cli: String(
+                result?.latestVersion || result?.latest || "—",
+              ),
+            })
+          : "";
 
   return (
     <div
@@ -436,15 +485,23 @@ export function CliUpdateRow({
                       ? "switch-alpha"
                       : "switch-stable",
                   );
-                } else {
+                } else if (confirm.kind === "pin") {
                   void runInstall(
                     { version: confirm.version },
                     "pin",
                   );
+                } else if (confirm.kind === "app-behind") {
+                  void runInstall(
+                    confirm.opts ?? null,
+                    confirm.busyKind ?? "install",
+                    true,
+                  );
                 }
               }}
             >
-              {t("settings.cliChannel.confirmAction")}
+              {confirm?.kind === "app-behind"
+                ? t("settings.cliUpdate.appBehindConfirm")
+                : t("settings.cliChannel.confirmAction")}
             </button>
           </>
         }

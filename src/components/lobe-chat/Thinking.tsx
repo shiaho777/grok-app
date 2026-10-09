@@ -10,7 +10,15 @@
  * Tool bursts use TimelinePhaseBlock (“工作了 / Worked for …”) instead.
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { IconBulb, IconChevronDown, IconChevronRight } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { useThoughtBodyFollow } from "@/hooks/useThoughtBodyFollow";
@@ -24,6 +32,12 @@ import {
   freezeThinkingDurationMs,
   nextThinkingStartAnchor,
 } from "@/lib/thinkingStartAnchor";
+import {
+  getProviderRetryStatus,
+  shortProviderRetryReason,
+  subscribeProviderRetryStatus,
+} from "@/lib/providerRetryStatusStore";
+import { resolveThinkingWaitHint } from "@/lib/thinkingWaitHint";
 
 export const Thinking = memo(function Thinking({
   content,
@@ -156,6 +170,36 @@ export const Thinking = memo(function Thinking({
   const hasBody =
     (typeof content === "string" && content.trim().length > 0) ||
     (content != null && typeof content !== "string");
+  const retryStatus = useSyncExternalStore(
+    subscribeProviderRetryStatus,
+    getProviderRetryStatus,
+    getProviderRetryStatus,
+  );
+  const waitHint = resolveThinkingWaitHint({
+    live: !!thinking,
+    hasBody,
+    durationMs: localDuration,
+    retry: retryStatus,
+  });
+  const waitHintText = useMemo(() => {
+    if (waitHint === "retry" && retryStatus) {
+      const reason = shortProviderRetryReason(retryStatus.reason);
+      const attempt = String(retryStatus.attempt);
+      const max = String(retryStatus.maxRetries);
+      if (reason) {
+        return tr("chat.providerRetryingWithReason", {
+          attempt,
+          max,
+          reason,
+        });
+      }
+      return tr("chat.providerRetrying", { attempt, max });
+    }
+    if (waitHint === "waiting") {
+      return tr("chat.waitingFirstToken");
+    }
+    return null;
+  }, [waitHint, retryStatus, tr]);
   const thoughtFollowKey = typeof content === "string" ? content : "";
   const thoughtBodyRef = useThoughtBodyFollow({
     live: !!thinking,
@@ -182,6 +226,7 @@ export const Thinking = memo(function Thinking({
       }
       data-testid="thinking-block"
       data-expanded={expanded && hasBody ? "1" : "0"}
+      data-wait-hint={waitHint ?? undefined}
     >
       <button
         type="button"
@@ -211,6 +256,12 @@ export const Thinking = memo(function Thinking({
           </span>
         ) : null}
       </button>
+
+      {waitHintText ? (
+        <div className="grok-thought__hint" data-testid="thinking-wait-hint">
+          {waitHintText}
+        </div>
+      ) : null}
 
       {/* Collapsed: header only. Expanded: muted dig-in body. */}
       {expanded && hasBody ? (

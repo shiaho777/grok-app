@@ -1,6 +1,5 @@
 //! Process capacity, park/unpark, idle recycle, snapshots.
 
-#![allow(dead_code)] // residual-clippy: snapshot_from_parked
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -265,6 +264,46 @@ impl SessionManager {
             .unwrap_or(false)
     }
 
+    /// True when any live or background mid-turn session is bound to `project_id`
+    /// or has a worktree path under `project_path` (git switch safety).
+    pub fn any_busy_turn_for_project(
+        &self,
+        project_id: Option<&str>,
+        project_path: &str,
+    ) -> Option<String> {
+        let norm = |s: &str| s.trim().trim_end_matches(['/', '\\']).replace('\\', "/");
+        let target = norm(project_path);
+        let matches = |s: &LiveSession| {
+            if !Self::live_session_is_busy(s) {
+                return false;
+            }
+            if let (Some(want), Some(have)) = (project_id, s.meta.project_id.as_deref()) {
+                if want == have {
+                    return true;
+                }
+            }
+            if let Some(wp) = s.meta.worktree_path.as_deref() {
+                let n = norm(wp);
+                if n == target || n.starts_with(&(target.clone() + "/")) {
+                    return true;
+                }
+            }
+            false
+        };
+        {
+            let guard = self.inner.lock();
+            if let Some(s) = guard.as_ref() {
+                if matches(s) {
+                    return Some(s.app_session_id.clone());
+                }
+            }
+        }
+        let bg = self.background.lock();
+        bg.values()
+            .find(|s| matches(s))
+            .map(|s| s.app_session_id.clone())
+    }
+
     pub(super) fn live_session_is_busy(s: &LiveSession) -> bool {
         // Authoritative: the prompt RPC has not resolved, so the agent is still
         // producing output for this chat no matter what the FSM says. Parking
@@ -345,11 +384,19 @@ impl SessionManager {
 
     /// Drop all in-turn busy markers after a terminal turn failure.
     /// Complements FSM `fail_with` (which only flips state + last_error).
-    pub(super) fn release_failed_turn_markers(s: &mut LiveSession, app: Option<&AppHandle>) {
-        // Flush the last coalesced tokens before dropping the buffer (P0-1 / P1-9).
+    /// Stream payloads go into `pending_emits` for emit after locks drop.
+    pub(super) fn release_failed_turn_markers(
+        s: &mut LiveSession,
+        pending_emits: Option<&mut Vec<StreamEmitPayload>>,
+    ) {
+        // Take the last coalesced tokens before dropping the buffer (P0-1 / P1-9).
         // No done flag: the error / fail_with state should win over a fake Ready.
-        if let Some(app) = app {
-            Self::flush_pending_stream_emit(s, app);
+        if let Some(out) = pending_emits {
+            if let Some(p) = Self::take_pending_stream_emit(s) {
+                out.push(p);
+            }
+        } else {
+            s.pending_stream_emit = None;
         }
         s.prompt_in_flight = false;
         s.streaming_message_id = None;
@@ -994,11 +1041,29 @@ impl SessionManager {
     }
 
     pub(super) async fn kill_acp_bounded(acp: &AcpClient) {
+        let pid = acp.child_pid();
+        let local_tree = acp.owns_local_process_tree();
         if tokio::time::timeout(Duration::from_secs(ACP_KILL_TIMEOUT_SECS), acp.kill())
             .await
             .is_err()
         {
-            tracing::warn!(secs = ACP_KILL_TIMEOUT_SECS, "acp kill timed out");
+            tracing::warn!(
+                secs = ACP_KILL_TIMEOUT_SECS,
+                pid = ?pid,
+                local_tree,
+                "acp kill timed out"
+            );
+            // Best-effort fallback if `AcpClient::kill` hung after transport close
+            // (e.g. wedged `child.kill`). Local Windows trees only — never SSH/WSL.
+            // Keep this on the blocking pool so a second taskkill wait cannot
+            // freeze the same Tokio worker that just timed out.
+            #[cfg(windows)]
+            if local_tree {
+                if let Some(pid) = pid {
+                    let ok = crate::process_util::kill_process_tree_async(pid).await;
+                    tracing::warn!(pid, ok, "acp kill timeout: fallback process-tree kill");
+                }
+            }
         }
     }
 
@@ -1384,13 +1449,14 @@ impl SessionManager {
     }
 
     pub(super) fn emit_state(app: &AppHandle, snap: &SessionSnapshot) {
-        let _ = app.emit("session://state", snap);
+        // Mirror phones need the same settle path as the desktop (#1001).
+        crate::mirror::fanout_event(app, "session://state", snap);
     }
 
     /// Multi-session runtime for a non-focused session (background / parked).
     /// Does **not** move the live focus slot — UI projects this into `liveMap` only.
     pub(super) fn emit_runtime(app: &AppHandle, snap: &SessionSnapshot) {
-        let _ = app.emit("session://runtime", snap);
+        crate::mirror::fanout_event(app, "session://runtime", snap);
     }
 
     pub(super) fn snapshot_from_live(s: &LiveSession) -> SessionSnapshot {
@@ -1407,6 +1473,7 @@ impl SessionManager {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn snapshot_from_parked(p: &ParkedAgent) -> SessionSnapshot {
         SessionSnapshot {
             session_id: Some(p.app_session_id.clone()),
@@ -1421,12 +1488,20 @@ impl SessionManager {
         }
     }
 
-    /// Persist + push a chat-visible error for a failed turn (retries exhausted, RPC fail, …).
-    /// Updates UI via `session://turn_error` so the optimistic thinking bubble becomes a record.
+    /// Prepare a chat-visible error for a failed turn (retries exhausted, RPC fail, …).
+    /// Caller commits via [`Self::commit_turn_boundary_persist`] after locks drop so
+    /// the optimistic thinking bubble becomes a record without holding session locks
+    /// across disk RMW / `app.emit`.
     ///
     /// Content is intentionally short (code + compact reason). The UI maps codes to i18n copy
     /// and must not dump raw RPC/MCP stderr into the chat bubble.
-    pub(super) fn record_turn_error(s: &mut LiveSession, app: &AppHandle, err: &AgentError) {
+    ///
+    /// Stream payloads are pushed into `pending_emits` for emit after locks drop.
+    pub(super) fn prepare_turn_error(
+        s: &mut LiveSession,
+        err: &AgentError,
+        pending_emits: &mut Vec<StreamEmitPayload>,
+    ) -> PendingTurnBoundaryPersist {
         let mid = s
             .streaming_message_id
             .clone()
@@ -1439,9 +1514,16 @@ impl SessionManager {
         } else {
             format!("**{code}**\n\n{detail}")
         };
-        if let Err(e) = store::append_message(
-            &s.app_session_id,
-            ChatMessageStored {
+        s.meta.updated_at = chrono::Utc::now();
+        // Clear *all* busy markers (including deferred prompt_complete / open tools).
+        // Leaving them set after fail_with left the session as Disconnected+busy,
+        // so connect no-oped forever and local sends failed while Remote IM still worked.
+        Self::release_failed_turn_markers(s, Some(pending_emits));
+
+        PendingTurnBoundaryPersist {
+            stream_flush: None,
+            session_id: s.app_session_id.clone(),
+            message: ChatMessageStored {
                 id: mid.clone(),
                 role: "assistant".into(),
                 content: content.clone(),
@@ -1451,28 +1533,16 @@ impl SessionManager {
                 attachments: None,
                 marker: None,
             },
-        ) {
-            tracing::error!(session = %s.app_session_id, "turn-error journal append failed: {e}");
-        }
-        s.meta.updated_at = chrono::Utc::now();
-        if let Err(e) = store::update_session_meta(&s.meta) {
-            tracing::warn!(session = %s.app_session_id, "turn-error metadata update failed: {e}");
-        }
-        // Clear *all* busy markers (including deferred prompt_complete / open tools).
-        // Leaving them set after fail_with left the session as Disconnected+busy,
-        // so connect no-oped forever and local sends failed while Remote IM still worked.
-        Self::release_failed_turn_markers(s, Some(app));
-
-        let _ = app.emit(
-            "session://turn_error",
-            serde_json::json!({
+            meta: s.meta.clone(),
+            emit_event: "session://turn_error",
+            emit_payload: serde_json::json!({
                 "sessionId": s.app_session_id,
                 "messageId": mid,
                 "code": code,
                 "message": detail,
                 "content": content,
             }),
-        );
+        }
     }
 }
 
@@ -1480,6 +1550,35 @@ impl SessionManager {
 mod process_accounting_tests {
     use super::{count_unique_alive_processes, process_recycle_is_blocked};
     use std::collections::HashSet;
+
+    #[test]
+    fn turn_error_prepare_does_not_emit_or_journal_under_caller() {
+        let process = include_str!("process.rs");
+        let prepare = process
+            .split("fn prepare_turn_error(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n\n#[cfg(test)]").next())
+            .unwrap_or("");
+        assert!(
+            !prepare.contains("app.emit(") && !prepare.contains("store::append_message"),
+            "prepare_turn_error must only snapshot state; disk/IPC happen in commit_turn_boundary_persist"
+        );
+        let stream = include_str!("stream.rs");
+        let prepare_cancel = stream
+            .split("fn prepare_journal_turn_cancelled(")
+            .nth(1)
+            .and_then(|rest| rest.split("fn journal_hard_end_for_busy_agents").next())
+            .unwrap_or("");
+        assert!(
+            !prepare_cancel.contains("app.emit(")
+                && !prepare_cancel.contains("store::append_message"),
+            "prepare_journal_turn_cancelled must only snapshot state"
+        );
+        assert!(
+            stream.contains("fn commit_turn_boundary_persist("),
+            "turn-boundary disk/IPC must live in commit_turn_boundary_persist"
+        );
+    }
 
     #[test]
     fn shared_process_id_counts_once_across_session_slots() {

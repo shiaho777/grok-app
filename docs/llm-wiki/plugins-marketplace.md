@@ -6,16 +6,22 @@ Install and manage Grok Build plugins from **Settings → Extensions → Plugins
 
 | Action | Where | Effect |
 |--------|--------|--------|
-| Recommended | Plugins → **推荐** | ChatCut only (`https://github.com/ChatCut-Inc/agent-plugin#codex`); **never auto-install**; GlassModal confirm then `plugin install --trust` |
+| Recommended | Plugins → **推荐** | ChatCut (`https://github.com/ChatCut-Inc/agent-plugin#codex`) and **X API** (`https://github.com/RongleCat/x-api`); **never auto-install**; GlassModal confirm then `plugin install --trust` |
 | List installed | Plugins → **已安装** | `grok plugin list --json` + inspect enrich; primary control = enable toggle; update/validate/details/uninstall under expand |
 | Details / uninstall / update | Expanded installed row | CLI; GlassModal confirms uninstall |
-| **Validate** | Expanded **Validate**, or advanced install **Validate** on a local path | `grok plugin validate [path]`; GlassModal + in-row summary; soft-fail if CLI too old / missing |
-| Browse catalog | Plugins → **可安装** | ensure `https://github.com/openai/plugins` (idempotent soft-fail) then `plugin list --json --available` (cached) |
-| Install from catalog | Installable row → confirm | `plugin install --trust` then `plugin enable` + soft-respawn |
-| Manual install | Plugins → **高级** “Install from path or git…” | path / git / `owner/repo[#subdir]`; optional pre-install validate for local folders |
-| Marketplace sources | Installable → sources details | add / remove / refresh git sources (**never** delete user sources when ensuring openai) |
+| **Validate** | Path-install **Validate** (local folder only), or installed-row validate | `grok plugin validate [path]`; in-form summary + GlassModal; soft-fail if CLI too old / missing |
+| Browse catalog | Plugins → **发现 / Discover** | ensure `https://github.com/openai/plugins` (idempotent soft-fail) then `plugin list --json --available` (cached) |
+| Install from catalog | Discover row → confirm | `plugin install --trust` then `plugin enable` + soft-respawn |
+| Manual install | Discover → **+** (`settings-anchor-ext-plugins-install`) | GlassModal: local folder via **Choose folder** or paste; git URL / `owner/repo[#subdir]`; optional Validate; then confirm |
+| Marketplace sources | Discover → sources gear | add / remove / refresh git sources (**never** delete user sources when ensuring openai) |
 
 Skills / MCP enable toggles remain App-side (`extensions.json` + ACP inject). **Plugins follow CLI/config as source of truth** — do not invent a second store under `~/.grok-app`.
+
+Installed plugin `.mcp.json` servers (GUI path install included) are listed under **Extensions → MCP → From plugins**. Host expands `${CLAUDE_PLUGIN_ROOT}` / `${GROK_PLUGIN_ROOT}` and injects them on session open; it does not copy them into `~/.grok/config.toml`.
+
+Plugin MCP auth is **not** ChatCut’s HTTP `mcp_oauth_start`. For `x-api`, the row **Authorize** button opens a GlassModal: console four tokens (App-owner) or OAuth 2 PKCE localhost (`http://127.0.0.1:8787/callback`). Credentials stay in `~/.x-api/credentials.json`.
+
+The Host sends CLI arguments through a private stdin pipe to its embedded Node launcher. Legacy plugins still receive `process.argv` in memory, but no auth secrets appear in the OS command line. Never reintroduce a direct `node script --api-secret ...` spawn; keep output redaction and timeout cleanup.
 
 **Deep link:** `#/settings/extensions/market` → Plugins tab (installable anchor `settings-anchor-ext-plugins-catalog`). Search for marketplace/市场 hits the same entry.
 

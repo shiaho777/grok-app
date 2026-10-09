@@ -201,6 +201,7 @@ pub async fn plugin_enable(
         };
         return Err(msg.chars().take(400).collect());
     }
+    crate::extensions::invalidate_mcp_cache();
     mgr.soft_respawn(&app).await;
     Ok(serde_json::json!({
         "ok": true,
@@ -241,6 +242,7 @@ pub async fn plugin_disable(
         };
         return Err(msg.chars().take(400).collect());
     }
+    crate::extensions::invalidate_mcp_cache();
     mgr.soft_respawn(&app).await;
     Ok(serde_json::json!({
         "ok": true,
@@ -281,6 +283,7 @@ pub async fn plugin_uninstall(
         };
         return Err(msg.chars().take(400).collect());
     }
+    crate::extensions::invalidate_mcp_cache();
     mgr.soft_respawn(&app).await;
     Ok(serde_json::json!({
         "ok": true,
@@ -323,9 +326,33 @@ pub async fn plugin_details(name: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+fn strip_wrapping_quotes(s: &str) -> &str {
+    let t = s.trim();
+    let bytes = t.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' || first == b'\'') && first == last {
+            return t[1..t.len() - 1].trim();
+        }
+    }
+    t
+}
+
+fn file_url_to_local_path(s: &str) -> Option<String> {
+    let url = url::Url::parse(s).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    url.to_file_path().ok().map(|p| p.display().to_string())
+}
+
 /// Trim install source; reject empty. Accepts path, git URL, or GitHub shorthand.
+/// Strips wrapping quotes and converts `file://` URLs to local paths.
 pub fn normalize_plugin_install_source(source: &str) -> Result<String, String> {
-    let s = source.trim();
+    let stripped = strip_wrapping_quotes(source);
+    let s = file_url_to_local_path(stripped).unwrap_or_else(|| stripped.to_string());
+    let s = s.trim();
     if s.is_empty() {
         return Err("plugin source required".into());
     }
@@ -498,6 +525,7 @@ pub async fn plugin_install(
         };
         return Err(msg.chars().take(400).collect());
     }
+    crate::extensions::invalidate_mcp_cache();
     mgr.soft_respawn(&app).await;
     let mut message = stdout.chars().take(400).collect::<String>();
     if let Some(em) = enable_msg {
@@ -763,6 +791,78 @@ pub async fn plugin_validate(
             }))
         }
     }
+}
+
+/// Redacted x-api (plugin MCP) credential status.
+#[tauri::command]
+pub async fn plugin_mcp_auth_status(name: String) -> Result<serde_json::Value, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("server name required".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::plugin_mcp::plugin_mcp_auth_status(&name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Save console four-token credentials for a plugin MCP (never logs secrets).
+#[tauri::command]
+pub async fn plugin_mcp_auth_save_tokens(
+    name: String,
+    api_key: String,
+    api_secret: String,
+    access_token: String,
+    access_token_secret: String,
+) -> Result<serde_json::Value, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("server name required".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::plugin_mcp::plugin_mcp_auth_save_tokens(
+            &name,
+            &api_key,
+            &api_secret,
+            &access_token,
+            &access_token_secret,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Browser OAuth 2.0 PKCE for a plugin MCP (localhost callback; blocks until done).
+#[tauri::command]
+pub async fn plugin_mcp_auth_oauth2(
+    name: String,
+    client_id: String,
+    client_secret: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("server name required".into());
+    }
+    let secret = client_secret.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::plugin_mcp::plugin_mcp_auth_oauth2(&name, &client_id, &secret)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn plugin_mcp_auth_logout(name: String) -> Result<serde_json::Value, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("server name required".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::plugin_mcp::plugin_mcp_auth_logout(&name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 include!("extensions_p2_tests.rs");

@@ -3,12 +3,25 @@
 //!
 //! Session ids are always unique UUIDs. Reusing ids is unsafe: an old reader
 //! thread can `remove()` a newer session with the same key and kill it.
+//!
+//! ## Locking
+//! The global sessions map only stores [`SessionHandle`] (`Arc`) values. Callers
+//! clone the handle under the map lock, then release the map before any
+//! `write_all` / flush / resize / kill syscall. Each session serializes its own
+//! writes via a per-session mutex so one backpressured PTY cannot block other tabs.
+//!
+//! ## Windows write backpressure
+//! `portable-pty` ConPTY writers are plain pipe handles with no cancellable
+//! mid-write timeout. We therefore bound only the wait to *acquire* the
+//! per-session write lock ([`PTY_WRITE_LOCK_TIMEOUT`]); if another write is
+//! already stuck in `write_all`, new writes fail fast with a recoverable error
+//! instead of queueing forever. The map lock is never held during pipe I/O.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::mpsc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -24,6 +37,12 @@ const EVENT_EXIT: &str = "terminal://exit";
 pub const PTY_DATA_FLUSH_MS: u64 = 16;
 /// Flush once the batch reaches this many UTF-8 bytes.
 pub const PTY_DATA_FLUSH_CHARS: usize = 4096;
+
+/// Max wait to acquire a per-session write lock when another write may be stuck.
+/// Applies on Windows (ConPTY pipe backpressure); other platforms block on the
+/// session lock as usual because local PTYs rarely wedge the same way.
+#[cfg(windows)]
+pub const PTY_WRITE_LOCK_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub fn should_flush_pty_data(pending_chars: usize, force: bool) -> bool {
     if pending_chars == 0 {
@@ -57,18 +76,54 @@ struct PtyExitPayload {
 }
 
 struct PtySession {
-    writer: Box<dyn Write + Send>,
-    master: Box<dyn MasterPty + Send>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Per-session write gate — never acquired while holding the global map lock.
+    writer: parking_lot::Mutex<Box<dyn Write + Send>>,
+    /// Mutex so `SessionHandle` is `Sync` (`MasterPty` is only `Send`).
+    master: parking_lot::Mutex<Box<dyn MasterPty + Send>>,
+    killer: parking_lot::Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// Unix process-group kill only; Windows uses `ChildKiller`.
     #[cfg(unix)]
     pid: Option<u32>,
 }
 
-fn sessions() -> &'static Mutex<HashMap<String, PtySession>> {
-    static S: OnceLock<Mutex<HashMap<String, PtySession>>> = OnceLock::new();
+type SessionHandle = Arc<PtySession>;
+
+fn sessions() -> &'static Mutex<HashMap<String, SessionHandle>> {
+    static S: OnceLock<Mutex<HashMap<String, SessionHandle>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
+
+fn lookup_session(session_id: &str) -> Result<SessionHandle, String> {
+    let g = sessions()
+        .lock()
+        .map_err(|e| format!("sessions lock: {e}"))?;
+    g.get(session_id)
+        .cloned()
+        .ok_or_else(|| format!("pty session not found: {session_id}"))
+}
+
+fn lock_writer<'a>(
+    handle: &'a SessionHandle,
+) -> Result<parking_lot::MutexGuard<'a, Box<dyn Write + Send>>, String> {
+    #[cfg(windows)]
+    {
+        handle
+            .writer
+            .try_lock_for(PTY_WRITE_LOCK_TIMEOUT)
+            .ok_or_else(|| {
+                "pty write timed out waiting for session lock (backpressured); retry".to_string()
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(handle.writer.lock())
+    }
+}
+
+#[cfg(test)]
+type WriteEnterHook = Arc<dyn Fn(&str) + Send + Sync>;
+#[cfg(test)]
+static WRITE_ENTER_HOOK: parking_lot::Mutex<Option<WriteEnterHook>> = parking_lot::Mutex::new(None);
 
 fn resolve_shell() -> String {
     if let Ok(s) = std::env::var("SHELL") {
@@ -248,13 +303,13 @@ pub fn spawn(
             .map_err(|e| format!("sessions lock: {e}"))?;
         g.insert(
             sid.clone(),
-            PtySession {
-                writer,
-                master: pair.master,
-                killer,
+            Arc::new(PtySession {
+                writer: parking_lot::Mutex::new(writer),
+                master: parking_lot::Mutex::new(pair.master),
+                killer: parking_lot::Mutex::new(killer),
                 #[cfg(unix)]
                 pid,
-            },
+            }),
         );
     }
 
@@ -346,6 +401,8 @@ pub fn spawn(
                 let _ = tx.send(data);
             }
             // Only remove *this* id — never a later remount (unique UUID).
+            // Dropping the map entry releases one Arc; in-flight writers may still
+            // hold another until their write finishes (no use-after-remove).
             if let Ok(mut g) = sessions().lock() {
                 g.remove(&sid_r);
             }
@@ -373,27 +430,27 @@ pub fn spawn(
 }
 
 pub fn write_bytes(session_id: &str, data: &str) -> Result<(), String> {
-    let mut g = sessions()
-        .lock()
-        .map_err(|e| format!("sessions lock: {e}"))?;
-    let sess = g
-        .get_mut(session_id)
-        .ok_or_else(|| format!("pty session not found: {session_id}"))?;
-    sess.writer
+    let handle = lookup_session(session_id)?;
+    let mut writer = lock_writer(&handle)?;
+    #[cfg(test)]
+    {
+        let hook = WRITE_ENTER_HOOK.lock().clone();
+        if let Some(hook) = hook {
+            hook(session_id);
+        }
+    }
+    writer
         .write_all(data.as_bytes())
-        .map_err(|e| format!("pty write: {e}"))?;
-    let _ = sess.writer.flush();
+        .map_err(|e| format!("pty write failed (closed or backpressured): {e}"))?;
+    // Flush is best-effort; some PTY backends treat it as a no-op.
+    let _ = writer.flush();
     Ok(())
 }
 
 pub fn resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-    let g = sessions()
-        .lock()
-        .map_err(|e| format!("sessions lock: {e}"))?;
-    let sess = g
-        .get(session_id)
-        .ok_or_else(|| format!("pty session not found: {session_id}"))?;
-    sess.master
+    let handle = lookup_session(session_id)?;
+    let master = handle.master.lock();
+    master
         .resize(PtySize {
             rows: rows.max(5),
             cols: cols.max(20),
@@ -405,16 +462,24 @@ pub fn resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
 }
 
 pub fn kill(session_id: &str) -> Result<(), String> {
-    let mut g = sessions()
-        .lock()
-        .map_err(|e| format!("sessions lock: {e}"))?;
-    let Some(mut sess) = g.remove(session_id) else {
-        return Ok(());
+    let handle = {
+        let mut g = sessions()
+            .lock()
+            .map_err(|e| format!("sessions lock: {e}"))?;
+        match g.remove(session_id) {
+            Some(h) => h,
+            None => return Ok(()),
+        }
     };
-    drop(g);
-    let _ = sess.killer.kill();
+    // Signal outside the map lock. In-flight writers may still hold an Arc;
+    // their write will error once the pipe closes, and resources drop with the
+    // last handle (reader remove is then a no-op).
+    {
+        let mut killer = handle.killer.lock();
+        let _ = killer.kill();
+    }
     #[cfg(unix)]
-    if let Some(pid) = sess.pid {
+    if let Some(pid) = handle.pid {
         if pid > 1 {
             // SIGHUP + closed PTY is not enough for jobs that ignore hangup.
             unsafe {
@@ -423,17 +488,71 @@ pub fn kill(session_id: &str) -> Result<(), String> {
             }
         }
     }
-    // Drop master/writer after signalling so the slave EOF races the kill.
-    drop(sess);
+    drop(handle);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
 
     fn env_str(cmd: &CommandBuilder, key: &str) -> Option<String> {
         cmd.get_env(key).map(|v| v.to_string_lossy().into_owned())
+    }
+
+    #[derive(Debug)]
+    struct NopKiller;
+
+    impl ChildKiller for NopKiller {
+        fn kill(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(NopKiller)
+        }
+    }
+
+    struct SinkWriter;
+
+    impl Write for SinkWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn insert_test_session(id: &str, writer: Box<dyn Write + Send>) {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty for test session");
+        drop(pair.slave);
+        let _ = pair.master.take_writer();
+        let mut g = sessions().lock().unwrap();
+        g.insert(
+            id.to_string(),
+            Arc::new(PtySession {
+                writer: parking_lot::Mutex::new(writer),
+                master: parking_lot::Mutex::new(pair.master),
+                killer: parking_lot::Mutex::new(Box::new(NopKiller)),
+                #[cfg(unix)]
+                pid: None,
+            }),
+        );
+    }
+
+    fn remove_test_session(id: &str) {
+        let _ = sessions().lock().unwrap().remove(id);
     }
 
     #[test]
@@ -470,5 +589,105 @@ mod tests {
         assert_eq!(env_str(&cmd, "CLICOLOR").as_deref(), Some("1"));
         assert_eq!(env_str(&cmd, "CLICOLOR_FORCE").as_deref(), Some("1"));
         assert_eq!(env_str(&cmd, "FORCE_COLOR").as_deref(), Some("1"));
+    }
+
+    /// One session holding its write lock must not block resize/write on another.
+    #[test]
+    fn blocked_session_write_does_not_block_other_session() {
+        let blocked_id = "pty_test_blocked_write";
+        let free_id = "pty_test_free_peer";
+        insert_test_session(blocked_id, Box::new(SinkWriter));
+        insert_test_session(free_id, Box::new(SinkWriter));
+
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let entered_tx = Mutex::new(Some(entered_tx));
+        let release_rx = Mutex::new(Some(release_rx));
+
+        *WRITE_ENTER_HOOK.lock() = Some(Arc::new(move |id: &str| {
+            if id != blocked_id {
+                return;
+            }
+            if let Some(tx) = entered_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            if let Some(rx) = release_rx.lock().unwrap().take() {
+                let _ = rx.recv();
+            }
+        }));
+
+        let blocked = thread::spawn(move || write_bytes(blocked_id, "x"));
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("blocked writer should enter per-session lock");
+
+        let started = Instant::now();
+        write_bytes(free_id, "y").expect("peer write while other session blocked");
+        resize(free_id, 100, 40).expect("peer resize while other session blocked");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "peer ops must not wait on another session's write lock"
+        );
+
+        let _ = release_tx.send(());
+        blocked
+            .join()
+            .expect("blocked writer thread")
+            .expect("blocked write completes after release");
+
+        *WRITE_ENTER_HOOK.lock() = None;
+        remove_test_session(blocked_id);
+        remove_test_session(free_id);
+    }
+
+    #[test]
+    fn reader_remove_while_handle_held_is_safe() {
+        let id = "pty_test_remove_race";
+        insert_test_session(id, Box::new(SinkWriter));
+        let handle = lookup_session(id).expect("session present");
+        {
+            let mut g = sessions().lock().unwrap();
+            g.remove(id);
+        }
+        assert!(lookup_session(id).is_err());
+        // Stale Arc still usable for a final write (pipe/session resources alive).
+        {
+            let mut writer = handle.writer.lock();
+            writer.write_all(b"z").expect("stale handle write");
+        }
+        drop(handle);
+        assert!(kill(id).is_ok());
+    }
+
+    #[test]
+    fn write_unknown_session_errors_clearly() {
+        let err = write_bytes("pty_missing_write", "a").unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn concurrent_lookup_count_stays_independent() {
+        // Sanity: two handles from the map are distinct Arcs for distinct keys.
+        let a = "pty_test_arc_a";
+        let b = "pty_test_arc_b";
+        insert_test_session(a, Box::new(SinkWriter));
+        insert_test_session(b, Box::new(SinkWriter));
+        let ha = lookup_session(a).unwrap();
+        let hb = lookup_session(b).unwrap();
+        assert!(!Arc::ptr_eq(&ha, &hb));
+        let writes = Arc::new(AtomicUsize::new(0));
+        {
+            let mut wa = ha.writer.lock();
+            wa.write_all(b"a").unwrap();
+            writes.fetch_add(1, Ordering::SeqCst);
+        }
+        {
+            let mut wb = hb.writer.lock();
+            wb.write_all(b"b").unwrap();
+            writes.fetch_add(1, Ordering::SeqCst);
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
+        remove_test_session(a);
+        remove_test_session(b);
     }
 }

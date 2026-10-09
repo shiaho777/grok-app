@@ -86,7 +86,6 @@
   background: var(--bg-hover);
 }
 
-
 .settings-acp-chip.is-ok .settings-acp-chip__dot {
   background: var(--success, #3d9a5f);
 }
@@ -284,7 +283,11 @@
 
 .settings-cli-update__channel.is-alpha {
   color: var(--warning, #c90);
-  border-color: color-mix(in srgb, var(--warning, #c90) 35%, var(--border-subtle));
+  border-color: color-mix(
+    in srgb,
+    var(--warning, #c90) 35%,
+    var(--border-subtle)
+  );
 }
 
 .settings-cli-update__channel.is-unknown {
@@ -720,19 +723,35 @@ textarea.settings-input.settings-agents-json__textarea {
 
 .settings-tool-deny__chip:hover {
   color: var(--text-primary);
-  border-color: color-mix(in srgb, var(--text-secondary) 35%, var(--border-subtle));
+  border-color: color-mix(
+    in srgb,
+    var(--text-secondary) 35%,
+    var(--border-subtle)
+  );
 }
 
 .settings-tool-deny__chip.is-on {
-  background: color-mix(in srgb, var(--accent, #6b8afd) 16%, var(--bg-elevated));
+  background: color-mix(
+    in srgb,
+    var(--accent, #6b8afd) 16%,
+    var(--bg-elevated)
+  );
   color: var(--text-primary);
   font-weight: 600;
-  border-color: color-mix(in srgb, var(--accent, #6b8afd) 40%, var(--border-subtle));
+  border-color: color-mix(
+    in srgb,
+    var(--accent, #6b8afd) 40%,
+    var(--border-subtle)
+  );
 }
 
 .settings-tool-deny__chip.is-caution.is-on {
   background: color-mix(in srgb, var(--danger, #e55) 14%, var(--bg-elevated));
-  border-color: color-mix(in srgb, var(--danger, #e55) 40%, var(--border-subtle));
+  border-color: color-mix(
+    in srgb,
+    var(--danger, #e55) 40%,
+    var(--border-subtle)
+  );
 }
 
 .settings-tool-deny__chip.is-covered {
@@ -1159,18 +1178,109 @@ html[data-theme-editor-shell] #root {
   align-items: center;
 }
 
+.settings-wallpaper__palette-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-wallpaper__palette-label {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.settings-wallpaper__palette {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-wallpaper__chip {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 12%, transparent);
+  background: var(--bg-input);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.settings-wallpaper__chip:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.settings-wallpaper__chip.is-on {
+  box-shadow:
+    0 0 0 2px var(--bg-elevated, var(--bg-card, #fff)),
+    0 0 0 4px var(--accent);
+}
+
+.settings-wallpaper__custom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-wallpaper__eyedrop {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.settings-wallpaper__eyedrop svg {
+  pointer-events: none;
+  position: relative;
+  z-index: 0;
+}
+
+.settings-wallpaper__eyedrop input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.settings-wallpaper__hex {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Wallpaper source modal (X + Imagine) ── */
-.modal.wallpaper-source-modal {
-  width: min(860px, calc(100vw - 28px));
-  max-height: min(92vh, 860px);
-  /* Prefer a tall shell so multi-result galleries can use the viewport */
-  min-height: min(72vh, 640px);
+.modal.glass-modal.wallpaper-source-modal {
+  width: min(1440px, calc(100vw - 32px));
+  max-height: min(94vh, 940px);
+  /* Keep the gallery shell stable across loading, filtering and empty states. */
+  height: min(88vh, 900px);
 }
 
 .wallpaper-source-modal__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   min-height: 0;
   /* Body fills modal; gallery scroll lives inside (not on multi-column) */
   flex: 1 1 auto;
@@ -1179,22 +1289,78 @@ html[data-theme-editor-shell] #root {
 }
 
 .wallpaper-source-tabs {
-  display: flex;
-  gap: 6px;
-  padding: 2px;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 4fr) minmax(0, 1fr)
+    minmax(0, 2fr);
+  grid-template-areas: "discovery create personal";
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 0 9px;
+  overflow: visible;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.wallpaper-source-tabs__group {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(max-content, 1fr);
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px;
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg-hover) 80%, transparent);
+  background: color-mix(in srgb, var(--bg-hover) 76%, transparent);
+}
+
+.wallpaper-source-tabs__group--discovery {
+  grid-area: discovery;
+}
+
+.wallpaper-source-tabs__group--create {
+  grid-area: create;
+}
+
+.wallpaper-source-tabs__group--personal {
+  grid-area: personal;
 }
 
 .wallpaper-source-tabs__btn {
-  flex: 1;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 32px;
+  width: 100%;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
   font-size: 13px;
   font-weight: 500;
-  padding: 8px 10px;
-  border-radius: calc(var(--radius-md) - 2px);
+  padding: 5px 10px;
+  border-radius: var(--radius-md);
   cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+
+.wallpaper-source-tabs__label {
+  white-space: nowrap;
+}
+
+.wallpaper-source-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  padding-top: 10px;
+  overflow: hidden;
 }

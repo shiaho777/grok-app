@@ -6,7 +6,10 @@
 import type { SessionState } from "./session";
 import { canSend, isSessionLiveStreaming } from "./session";
 import type { StopLatchState } from "./stopLatch";
-import { canSendWithStopLatch } from "./stopLatch";
+import {
+  canSendWithStopLatch,
+  shouldHoldReadyAfterUserStop,
+} from "./stopLatch";
 
 export type UiBusyGate = {
   /** Composer may send */
@@ -57,20 +60,45 @@ export function reconcileUiBusyGate(input: {
 /**
  * When opening a session, if UI cache says streaming but host snapshot is ready/idle,
  * prefer host (clear stuck busy).
+ *
+ * Optional `stopLatch`: after the user hits Stop we optimistically paint Ready.
+ * Late Host "streaming" must not re-stick the composer while that latch is armed.
  */
 export function reconcileSessionState(
   hostState: SessionState,
   uiCached?: SessionState | null,
+  opts?: {
+    stopLatch?: StopLatchState;
+    sessionId?: string | null;
+    /**
+     * Keep UI streaming when Host briefly paints Ready mid-send
+     * (ensureConnected → sessionSend). Avoids a Send/Stop flash.
+     */
+    preserveStreaming?: boolean;
+  },
 ): SessionState {
   if (!uiCached) return hostState;
-  // Host terminal + UI still streaming → host wins
+  // Host terminal + UI still streaming → host wins — unless a send is still
+  // in flight and Ready is only the post-connect handshake.
   if (
     (hostState === "ready" ||
       hostState === "idle" ||
       hostState === "disconnected") &&
     isSessionLiveStreaming(uiCached)
   ) {
+    if (opts?.preserveStreaming && hostState === "ready") {
+      return uiCached;
+    }
     return hostState;
+  }
+  // User Stop hold: keep optimistic Ready / Idle so Send stays available.
+  if (
+    opts?.stopLatch &&
+    shouldHoldReadyAfterUserStop(opts.stopLatch, opts.sessionId) &&
+    isSessionLiveStreaming(hostState) &&
+    canSend(uiCached)
+  ) {
+    return uiCached;
   }
   // Host streaming, UI idle → host wins
   if (isSessionLiveStreaming(hostState) && canSend(uiCached)) {

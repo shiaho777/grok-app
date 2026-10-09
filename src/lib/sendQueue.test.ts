@@ -14,6 +14,7 @@ import {
   makeQueuedSend,
   migrateDraftQueue,
   migrateDraftSendClaim,
+  releaseSendClaimsOnUserStop,
   moveQueuedSend,
   planClearSendQueue,
   queuePreviewText,
@@ -37,6 +38,22 @@ describe("sendQueue", () => {
     expect(queueSessionKey(null)).toBe("__draft__");
     expect(queueSessionKey(undefined)).toBe("__draft__");
     expect(queueSessionKey("abc")).toBe("abc");
+  });
+
+  it("releaseSendClaimsOnUserStop frees session + draft claims and bumps epochs", () => {
+    const claims = new Set<string>(["s1", "__draft__", "other"]);
+    const epochs = new Map<string, number>([
+      ["s1", 3],
+      ["__draft__", 1],
+    ]);
+    const r = releaseSendClaimsOnUserStop(claims, epochs, "s1");
+    expect(r.released).toBe(true);
+    expect(r.inFlight).toBe(true); // "other" remains
+    expect(claims.has("s1")).toBe(false);
+    expect(claims.has("__draft__")).toBe(false);
+    expect(claims.has("other")).toBe(true);
+    expect(epochs.get("s1")).toBe(4);
+    expect(epochs.get("__draft__")).toBe(2);
   });
 
   it("migrateDraftSendClaim moves the draft claim and epoch onto the real id", () => {

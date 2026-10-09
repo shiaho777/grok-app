@@ -223,9 +223,55 @@
   color: var(--text-primary);
 }
 
-.ext-ref-advanced .ext-plugin-install {
-  padding: 12px 14px 14px;
+.ext-ref-advanced > .ext-ref-section-label {
+  padding: 12px 14px 0;
   margin: 0;
+}
+
+.ext-ref-advanced .ext-plugin-install {
+  padding: 8px 14px 14px;
+  margin: 0;
+  border-bottom: 0;
+}
+
+.ext-plugin-install__lead {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.ext-plugin-install__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ext-plugin-install__input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.ext-plugin-install__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.ext-plugin-install__error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--danger, #e05a5a);
+}
+
+.ext-plugin-install .ext-plugin-result--inline {
+  margin-top: 4px;
+  gap: 6px;
 }
 
 /* ── Embedded installable catalog (kill second page chrome) ── */

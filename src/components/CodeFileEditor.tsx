@@ -1,6 +1,6 @@
 /** Syntax-highlighted code file editor (CodeMirror 6). */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   defaultKeymap,
   history,
@@ -9,9 +9,7 @@ import {
 } from "@codemirror/commands";
 import {
   bracketMatching,
-  defaultHighlightStyle,
   indentUnit,
-  syntaxHighlighting,
 } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { Compartment, EditorState } from "@codemirror/state";
@@ -41,6 +39,25 @@ export type CodeFileEditorProps = {
   ariaLabel: string;
 };
 
+type EditorProbe = {
+  valueLen: number;
+  domLen: number;
+  width: number;
+  height: number;
+  lines: number;
+};
+
+function readProbe(view: EditorView, value: string): EditorProbe {
+  const rect = view.contentDOM.getBoundingClientRect();
+  return {
+    valueLen: value.length,
+    domLen: view.contentDOM.innerText.length,
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    lines: view.state.doc.lines,
+  };
+}
+
 export function CodeFileEditor({
   value,
   fileName,
@@ -57,6 +74,7 @@ export function CodeFileEditor({
   const editComp = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
+  const [probe, setProbe] = useState<EditorProbe | null>(null);
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
 
@@ -94,7 +112,8 @@ export function CodeFileEditor({
           EditorState.readOnly.of(disabled),
           EditorView.editable.of(!disabled),
         ]),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        // Theme extensions already provide Atom One dark/light highlighting.
+        // Do not mount defaultHighlightStyle (light-theme ink).
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           onChangeRef.current(update.state.doc.toString());
@@ -107,7 +126,21 @@ export function CodeFileEditor({
 
     const view = new EditorView({ state, parent: host });
     viewRef.current = view;
+
+    // Packaged WebViews can mount before the flex host has a real box;
+    // re-measure so .cm-content gets a non-zero width.
+    const measure = () => {
+      view.requestMeasure();
+      setProbe(readProbe(view, view.state.doc.toString()));
+    };
+    const raf = window.requestAnimationFrame(() => {
+      measure();
+      window.setTimeout(measure, 50);
+      window.setTimeout(measure, 250);
+    });
+
     return () => {
+      window.cancelAnimationFrame(raf);
       view.destroy();
       viewRef.current = null;
     };
@@ -119,10 +152,15 @@ export function CodeFileEditor({
     const view = viewRef.current;
     if (!view) return;
     const current = view.state.doc.toString();
-    if (current === value) return;
+    if (current === value) {
+      setProbe(readProbe(view, value));
+      return;
+    }
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: value },
     });
+    view.requestMeasure();
+    setProbe(readProbe(view, value));
   }, [value]);
 
   useEffect(() => {
@@ -155,6 +193,7 @@ export function CodeFileEditor({
           codeEditorThemeExtensions(readCodeEditorTheme()),
         ),
       });
+      view.requestMeasure();
     };
     apply();
     const el = document.documentElement;
@@ -163,11 +202,24 @@ export function CodeFileEditor({
     return () => mo.disconnect();
   }, []);
 
+  const showProbe =
+    probe != null &&
+    (probe.domLen === 0 ||
+      probe.width < 8 ||
+      (probe.valueLen > 0 && probe.domLen < Math.min(probe.valueLen, 8)));
+
   return (
     <div
-      ref={hostRef}
       className="rp-code-editor"
       data-testid="code-file-editor"
-    />
+      style={{ position: "relative", height: "100%", minHeight: 0 }}
+    >
+      <div ref={hostRef} style={{ height: "100%", minHeight: 0 }} />
+      {showProbe ? (
+        <div className="rp-code-editor__probe" role="status">
+          {`CM probe value=${probe.valueLen} dom=${probe.domLen} lines=${probe.lines} box=${probe.width}x${probe.height}`}
+        </div>
+      ) : null}
+    </div>
   );
 }

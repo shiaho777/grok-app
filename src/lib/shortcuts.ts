@@ -53,6 +53,7 @@ export type ShortcutId =
   | "closeSideTab"
   | "quit"
   | "sidebarSessionNav"
+  | "recentSessionMru"
   | "settings"
   | "help"
   | "zoomIn"
@@ -80,8 +81,8 @@ export type ShortcutRow = {
 /**
  * Stable catalog id order — same as SHORTCUTS.
  * Includes display-only rows (send, newline, steer, stop, dictation, quit,
- * sidebarSessionNav, zoom*, promptHistory, typeToFocus) that are not matched
- * by {@link matchGlobalShortcut}.
+ * sidebarSessionNav, recentSessionMru, zoom*, promptHistory, typeToFocus)
+ * that are not matched by {@link matchGlobalShortcut}.
  */
 export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "search",
@@ -100,6 +101,7 @@ export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "closeSideTab",
   "quit",
   "sidebarSessionNav",
+  "recentSessionMru",
   "settings",
   "help",
   "zoomIn",
@@ -257,6 +259,16 @@ export const SHORTCUTS: ShortcutRow[] = [
     win: "J / K · ↑ / ↓",
   },
   {
+    // Ctrl+Tab on every OS (Cmd+Tab is the macOS app switcher). App handles
+    // it like dictation — ctrl-only, not the remappable mod matcher.
+    id: "recentSessionMru",
+    labelKey: "shortcuts.recentSessionMru",
+    group: "navigation",
+    scope: "global",
+    mac: "⌃ Tab · ⌃ ⇧ Tab",
+    win: "Ctrl Tab · Ctrl Shift Tab",
+  },
+  {
     id: "settings",
     labelKey: "shortcuts.settings",
     group: "navigation",
@@ -353,7 +365,8 @@ export function shortcutScope(id: ShortcutId): ShortcutScope {
  * special-cased in App for order vs voice cancel / overlays), `dictation`
  * (Ctrl+Space via `isVoiceToggleKey` — must not use meta, and runs before the
  * mod branch), `sidebarSessionNav` (plain j/k when focus is in the sidebar
- * session list), `closeSideTab` (⌘W / Ctrl+W handled in SideWorkbench — only
+ * session list), `recentSessionMru` (Ctrl+Tab / Ctrl+Shift+Tab, ctrl-only),
+ * `closeSideTab` (⌘W / Ctrl+W handled in SideWorkbench — only
  * steals when tabs are open), `quit` (Ctrl+Q twice via `useDoublePressQuit`),
  * `zoomIn` / `zoomOut` / `zoomReset` (`installZoomHotkeys` in main),
  * `promptHistory` (composer ↑/↓), `typeToFocus` (printable-key capture).
@@ -395,11 +408,6 @@ export type MatchGlobalShortcutOpts = {
    * (composer / slash / menus stay available). Defaults to loaded pref / true.
    */
   voiceHotkeyEnabled?: boolean;
-  /**
-   * Settings page is showing. The settings chord still matches while a
-   * settings field is focused so ⌘, / Ctrl+, can leave the page.
-   */
-  settingsOpen?: boolean;
 };
 
 function resolveVoiceHotkeyEnabled(explicit?: boolean): boolean {
@@ -424,15 +432,13 @@ function resolveVoiceHotkeyEnabled(explicit?: boolean): boolean {
  * ({@link loadShortcutRemaps}). Pass `remaps` explicitly in tests; runtime
  * loads from localStorage when omitted.
  *
- * Behavior preserved from the previous inline App handler (with defaults):
- * - findInChat works while typing
- * - newChat / settings skip when typing, except settings still matches
- *   while typing when {@link MatchGlobalShortcutOpts.settingsOpen} is true
- *   (toggle / leave Settings from a focused field)
- * - search / help / doctor / copyLastReply / liveVoice / toggleSidebar /
- *   sideFiles / sideBrowser / sideTerminal work while typing
- *   (layout + side / bottom-terminal chords are not blocked by composers)
+ * Behavior (mod chords — safe while the composer or other fields own focus):
+ * - findInChat / newChat / settings / search / help / doctor / copyLastReply /
+ *   liveVoice / toggleSidebar / sideFiles / sideBrowser / sideTerminal all
+ *   match while typing (⌘/Ctrl required; does not steal plain keystrokes)
  * - liveVoice is suppressed when {@link shouldFireLiveVoiceHotkey} is false
+ * - App still toggles Settings open/closed from the matched id (leave Settings
+ *   from a focused settings field via the same chord)
  */
 export function matchGlobalShortcut(
   ctx: ShortcutChordContext,
@@ -461,12 +467,6 @@ export function matchGlobalShortcut(
       })
     ) {
       continue;
-    }
-    // newChat / settings: skip while typing (same as pre-remap handler).
-    // Settings chord still fires while typing if the page is already open
-    // so the same shortcut can leave Settings from a focused field.
-    if ((id === "newChat" || id === "settings") && ctx.typing) {
-      if (!(id === "settings" && opts?.settingsOpen)) continue;
     }
     // Live Voice hotkey can be disabled in Settings (composer / menus still work).
     if (id === "liveVoice" && !shouldFireLiveVoiceHotkey(voiceHotkeyEnabled)) {

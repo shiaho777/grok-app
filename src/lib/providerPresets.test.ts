@@ -4,9 +4,11 @@ import {
   AMUX_MODELS,
   DEEPSEEK_EFFORTS,
   DEEPSEEK_MODELS,
+  GROK_CHANNEL_EFFORTS,
   GROK_OFFICIAL_EFFORTS,
   OPENROUTER_EFFORTS,
   OPENROUTER_MODELS,
+  ORCAROUTER_MODELS,
   PROVIDER_PRESETS,
   VOLCANO_ARK_MODELS,
   YUN_API_MODELS,
@@ -132,6 +134,54 @@ describe("providerPresets", () => {
         baseUrl: "https://openrouter.ai/api/v1",
       }),
     ).toBe("https://openrouter.ai/settings/keys");
+  });
+
+  it("ships OrcaRouter with Auto Router, chat_completions, vision, and Grok efforts", () => {
+    const p = findProviderPreset("orcarouter");
+    expect(p).toBeDefined();
+    expect(findProviderPreset("OrcaRouter")?.id).toBe("orcarouter");
+    expect(p!.name).toBe("OrcaRouter");
+    expect(p!.suggestedId).toBe("orcarouter");
+    expect(p!.baseUrl).toBe("https://api.orcarouter.ai/v1");
+    expect(p!.apiBackend).toBe("chat_completions");
+    expect(p!.supportsVision).toBe(true);
+    expect(p!.brandId).toBeUndefined();
+    expect(ORCAROUTER_MODELS).toEqual([
+      { id: "orcarouter/auto", name: "Auto Router", supportsVision: true },
+      { id: "openai/gpt-4o-mini", name: "GPT-4o mini", supportsVision: true },
+      {
+        id: "google/gemini-2.5-flash",
+        name: "Gemini 2.5 Flash",
+        supportsVision: true,
+      },
+    ]);
+    expect(p!.models).toEqual(ORCAROUTER_MODELS);
+    expect(p!.efforts.map((e) => e.id)).toEqual(
+      GROK_CHANNEL_EFFORTS.map((e) => e.id),
+    );
+    expect(p!.efforts.find((e) => e.isDefault)?.id).toBe("medium");
+    expect(p!.apiKeyUrl).toBe("https://orcarouter.ai/");
+    expect(
+      resolveProviderApiKeyUrl({
+        providerId: "orcarouter-----123",
+      }),
+    ).toBe("https://orcarouter.ai/");
+    expect(
+      resolveProviderApiKeyUrl({
+        baseUrl: "https://api.orcarouter.ai/v1",
+      }),
+    ).toBe("https://orcarouter.ai/");
+    expect(
+      resolveMatchedProviderPreset({
+        providerId: "orcarouter-----999",
+      })?.id,
+    ).toBe("orcarouter");
+    expect(
+      resolveMatchedProviderPreset({
+        baseUrl: "https://api.orcarouter.ai/v1",
+      })?.id,
+    ).toBe("orcarouter");
+    expect(resolveProviderBrandId({ providerId: "orcarouter" })).toBe(null);
   });
 
   it("resolves get-api-key URLs by id or base host", () => {

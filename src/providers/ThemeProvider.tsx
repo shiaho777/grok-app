@@ -1,11 +1,10 @@
 /**
  * Theme / skin / wallpaper ownership (extracted from App God Component).
  * localStorage keys and apply* behavior match the pre-split App.
+ * The shared context lives separately so Fast Refresh preserves its identity.
  */
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -54,6 +53,7 @@ import {
   applySkinToDocument,
   applyUiOpacityToDocument,
   applyWallpaperFlag,
+  applyWallpaperColorFlag,
   applyWallpaperBlurToDocument,
   applyWallpaperScrimToDocument,
   clearWallpaper,
@@ -64,6 +64,7 @@ import {
   loadWallpaperBlur,
   loadWallpaperRecord,
   loadWallpaperScrim,
+  wallpaperColorHex,
   saveComposerOpacity,
   saveSettingsOpacity,
   saveSkin,
@@ -86,61 +87,21 @@ import {
   subscribeAppearanceChanged,
 } from "@/lib/appearanceLiveSync";
 import { isThemeEditorDocument } from "@/lib/themeEditorShell";
+import {
+  ThemeShellContext,
+  type ThemeShellValue,
+} from "@/providers/ThemeShellContext";
 
-export type ThemeShellValue = {
-  theme: Theme;
-  themePreference: ThemePreference;
-  setThemePreference: (v: ThemePreference) => void;
-  systemTheme: Theme;
-  setSystemTheme: (v: Theme) => void;
-  themeSchedule: ThemeScheduleConfig;
-  setThemeSchedule: (v: ThemeScheduleConfig) => void;
-  scheduleClock: Date;
-  setScheduleClock: (v: Date) => void;
-  scheduleActive: boolean;
-  skin: ThemeSkinId;
-  setSkin: (v: ThemeSkinId) => void;
-  wallpaperRecord: WallpaperRecord | null;
-  setWallpaperRecord: React.Dispatch<React.SetStateAction<WallpaperRecord | null>>;
-  wallpaperUrl: string | null;
-  setWallpaperUrl: (v: string | null) => void;
-  wallpaperUrlRef: React.MutableRefObject<string | null>;
-  wallpaperScrim: number;
-  setWallpaperScrim: (v: number) => void;
-  wallpaperBlur: number;
-  setWallpaperBlur: (v: number) => void;
-  composerOpacity: number;
-  uiOpacity: number;
-  settingsOpacity: number;
-  textColor: string | null;
-  fontShadow: boolean;
-  applyThemeChoice: (next: ThemePreference) => void;
-  applyThemeScheduleChoice: (next: ThemeScheduleConfig) => void;
-  applySkinChoice: (
-    next: ThemeSkinId,
-    opts?: { applyPreferredTheme?: boolean },
-  ) => void;
-  applyWallpaperChoice: (
-    record: WallpaperRecord | null,
-    opts?: { onError?: (msg: string) => void },
-  ) => Promise<void>;
-  applyWallpaperAdjustChoice: (patch: {
-    focus: WallpaperFocus;
-    clip: WallpaperClip | null;
-    duration?: number;
-  }) => void;
-  applyWallpaperMediaSize: (size: { w: number; h: number }) => void;
-  applyWallpaperScrimChoice: (value: number) => void;
-  applyWallpaperBlurChoice: (value: number) => void;
-  applyComposerOpacityChoice: (value: number) => void;
-  applyUiOpacityChoice: (value: number) => void;
-  applySettingsOpacityChoice: (value: number) => void;
-  applyTextColorChoice: (value: string | null) => void;
-  applyFontShadowChoice: (value: boolean) => void;
-  resetAppearanceChromeChoice: () => void;
-};
+function wallpaperViewUrl(record: WallpaperRecord): string | null {
+  const fill = wallpaperColorHex(record);
+  if (fill) return fill;
+  if (!record.blob) return null;
+  return URL.createObjectURL(record.blob);
+}
 
-const ThemeShellContext = createContext<ThemeShellValue | null>(null);
+function revokeIfBlobUrl(url: string | null | undefined): void {
+  if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
 
 /** Persist theme preference into AppSettings (Host) for next cold-start paint. */
 async function persistThemeToHostSettings(
@@ -184,6 +145,24 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
   const [wallpaperUrl, setWallpaperUrl] = useState<string | null>(null);
   const wallpaperUrlRef = useRef<string | null>(null);
+  const paintWallpaperRecord = useCallback((rec: WallpaperRecord | null) => {
+    revokeIfBlobUrl(wallpaperUrlRef.current);
+    wallpaperUrlRef.current = null;
+    if (!rec) {
+      setWallpaperRecord(null);
+      setWallpaperUrl(null);
+      return;
+    }
+    const url = wallpaperViewUrl(rec);
+    if (!url) {
+      setWallpaperRecord(null);
+      setWallpaperUrl(null);
+      return;
+    }
+    wallpaperUrlRef.current = url.startsWith("blob:") ? url : null;
+    setWallpaperRecord(rec);
+    setWallpaperUrl(url);
+  }, []);
   const [wallpaperScrim, setWallpaperScrim] = useState(() =>
     loadWallpaperScrim(localStorage),
   );
@@ -283,10 +262,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     void (async () => {
       const rec = await loadWallpaperRecord();
       if (cancelled || !rec) return;
-      const url = URL.createObjectURL(rec.blob);
-      wallpaperUrlRef.current = url;
-      setWallpaperRecord(rec);
-      setWallpaperUrl(url);
+      paintWallpaperRecord(rec);
     })();
     return () => {
       cancelled = true;
@@ -317,19 +293,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         hydrateDocumentAppearancePrefs();
         void (async () => {
           const rec = await loadWallpaperRecord();
-          if (wallpaperUrlRef.current) {
-            URL.revokeObjectURL(wallpaperUrlRef.current);
-            wallpaperUrlRef.current = null;
-          }
-          if (!rec) {
-            setWallpaperRecord(null);
-            setWallpaperUrl(null);
-            return;
-          }
-          const url = URL.createObjectURL(rec.blob);
-          wallpaperUrlRef.current = url;
-          setWallpaperRecord(rec);
-          setWallpaperUrl(url);
+          paintWallpaperRecord(rec);
         })();
       }, 24);
     };
@@ -346,10 +310,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isThemeEditorDocument()) {
       applyWallpaperFlag(false);
+      applyWallpaperColorFlag(false);
       return;
     }
     applyWallpaperFlag(wallpaperUrl !== null);
-  }, [wallpaperUrl]);
+    applyWallpaperColorFlag(wallpaperRecord?.kind === "color");
+  }, [wallpaperUrl, wallpaperRecord?.kind]);
 
   useEffect(() => {
     if (isThemeEditorDocument()) return;
@@ -512,12 +478,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           opts?.onError?.(String(e));
           return;
         }
-        if (wallpaperUrlRef.current) {
-          URL.revokeObjectURL(wallpaperUrlRef.current);
-          wallpaperUrlRef.current = null;
-        }
-        setWallpaperRecord(null);
-        setWallpaperUrl(null);
+        paintWallpaperRecord(null);
         notifyAppearanceChanged();
         return;
       }
@@ -525,20 +486,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         ...record,
         focus: record.focus ?? undefined,
       };
-      try {
-        await saveWallpaper(toSave);
-      } catch (e) {
-        opts?.onError?.(String(e));
+      if (toSave.kind === "color" ? !wallpaperColorHex(toSave) : !toSave.blob) {
         return;
       }
-      const url = URL.createObjectURL(toSave.blob);
-      if (wallpaperUrlRef.current) URL.revokeObjectURL(wallpaperUrlRef.current);
-      wallpaperUrlRef.current = url;
-      setWallpaperRecord(toSave);
-      setWallpaperUrl(url);
-      notifyAppearanceChanged();
+      paintWallpaperRecord(toSave);
+      try {
+        await saveWallpaper(toSave);
+        notifyAppearanceChanged();
+      } catch (e) {
+        opts?.onError?.(String(e));
+      }
     },
-    [],
+    [paintWallpaperRecord],
   );
 
   const applyWallpaperAdjustChoice = useCallback(
@@ -666,8 +625,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setSystemTheme,
       themeSchedule,
       setThemeSchedule,
-      scheduleClock,
-      setScheduleClock,
       scheduleActive,
       skin,
       setSkin,
@@ -705,7 +662,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       themePreference,
       systemTheme,
       themeSchedule,
-      scheduleClock,
+      // scheduleClock intentionally excluded: the resolved `theme` above
+      // already reflects the schedule. Rebuilding the context value every
+      // 60s tick forced a full workbench re-render.
       scheduleActive,
       skin,
       wallpaperRecord,
@@ -739,12 +698,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       {children}
     </ThemeShellContext.Provider>
   );
-}
-
-export function useThemeShell(): ThemeShellValue {
-  const ctx = useContext(ThemeShellContext);
-  if (!ctx) {
-    throw new Error("useThemeShell must be used within ThemeProvider");
-  }
-  return ctx;
 }

@@ -9,7 +9,12 @@
 
 ## Delivery: loopback HTTP (primary)
 
-Host starts a process-local axum server on `127.0.0.1:0` at app boot (`media_server.rs`).
+Host starts a process-local axum server on a random available port in the
+browser-safe dynamic/private range `127.0.0.1:49152-65535` at app boot
+(`media_server.rs`). Do not bind `127.0.0.1:0`: hosts with a customized
+ephemeral range can return Chromium-blocked service ports such as `3659`, and
+WebView2 then rejects media with `ERR_UNSAFE_PORT` before the request reaches
+the server.
 
 ```
 GET http://127.0.0.1:{port}/v1/media?t={token}&p={urlencode(absPath)}
@@ -38,6 +43,34 @@ Chat **card** layout does **not** re-stream full multi-MB originals on every vir
 
 Very small locals (≤96 KiB) may skip re-encode and serve the original path.  
 Video covers remain separate (`video-posters` + ffmpeg).
+
+## Image viewer lifecycle
+
+Keep the shared viewer context and hooks in `ImageViewerContext.ts`, outside
+the provider's Fast Refresh boundary. Opening, closing, or unmounting the
+provider invalidates earlier asynchronous preparation; an older gallery must
+not reopen after close or replace a newer gallery. After first use, keep the
+lightbox mounted with `open=false` so its exit cleanup can complete.
+
+The viewer accepts mixed image and video galleries. Local video slides use the
+same loopback media endpoint as images; a gallery mounted during endpoint boot
+must rerender after `ensureMediaEndpoint()` settles so it does not keep a raw
+`file://` URL for the lifetime of the card. Image-only copy and zoom behavior
+must not be attached to video elements.
+
+Remote wallpaper cards open their already-validated thumbnail immediately and
+materialize the original only when that slide becomes current. Keep at most two
+original transfers active. If navigation outruns those slots, retain only the
+latest waiting slide; revisiting it may schedule it again after a slot opens.
+An original failure keeps the thumbnail visible, shows localized safe copy and
+retries only after an explicit user action.
+
+Closing the viewer, closing the source picker, changing source, starting a new
+search, refreshing Grok Saved, or observing a Grok Saved page/account revision
+invalidates queued and in-flight renderer results. A late original must neither
+reopen/replace the current gallery nor restore selection or local-path state
+from the previous source revision. Cancellation is still sent to the matching
+Host media bridge so renderer rejection is not the only boundary.
 
 ## Fallback
 
@@ -107,3 +140,13 @@ History load calls `paths_classify` (grants existing local paths, drops missing 
 - Path resolution: `session_resolve_relative_media`, `attachments.ts`, `sessionPathMap.ts`, `pathNormalize.ts`
 - Attach gate: `prepare_media_attachment_path` / `extract_structured_media_path` in `session_manager/types.rs`
 - Allowlist: `path_scope.rs`
+
+### Remote thumbnail decode bounds
+
+Remote thumbnail responses are read up to 12 MiB plus one overflow sentinel byte,
+including chunked bodies with no Content-Length. Before pixel decoding, the Host
+checks dimensions (at most 16,384 per edge), total pixels (50 million), and applies
+a 256 MiB decoder allocation limit. Valid images retain original dimensions in
+metadata and use the existing 480-pixel JPEG thumbnail shape. Local image decoding
+and cache behavior are unchanged. The bounded in-memory helper is reusable by
+remote wallpaper providers; no network source or new product control is added.

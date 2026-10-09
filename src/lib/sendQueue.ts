@@ -47,6 +47,28 @@ export function migrateDraftSendClaim(
   return true;
 }
 
+/**
+ * After user Stop: drop in-flight send claims for this chat (and draft) and
+ * bump epochs so a hung `sessionSend` / `ensureConnected` finally cannot
+ * keep the next Send silently no-op'ing on `claimSendForSession`.
+ */
+export function releaseSendClaimsOnUserStop(
+  claims: Set<string>,
+  epochs: Map<string, number>,
+  sessionId: string | null | undefined,
+): { released: boolean; inFlight: boolean } {
+  const keys = new Set<string>([
+    queueSessionKey(sessionId),
+    queueSessionKey(null),
+  ]);
+  let released = false;
+  for (const key of keys) {
+    if (claims.delete(key)) released = true;
+    epochs.set(key, (epochs.get(key) ?? 0) + 1);
+  }
+  return { released, inFlight: claims.size > 0 };
+}
+
 function newQueueId(): string {
   const c = globalThis.crypto;
   if (c && typeof c.randomUUID === "function") {

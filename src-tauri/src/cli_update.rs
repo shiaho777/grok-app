@@ -69,6 +69,30 @@ pub fn parse_cli_channel(raw: Option<&str>) -> CliReleaseChannel {
     }
 }
 
+/// Absolute App floor for in-app CLI upgrades without acknowledge (#1009).
+/// Historical: App 0.2.19 pulling CLI 1.0.x caused recovery / protocol gaps.
+/// Bump only when documenting that older Apps must not pull newest CLI alone;
+/// day-to-day “App behind” also comes from GitHub `app_check_update`.
+pub const MIN_APP_VERSION_FOR_CLI_UPGRADE: (u64, u64, u64) = (0, 2, 20);
+
+/// Prefix for structured soft-fail when App should be updated first (#1009).
+pub const APP_BEHIND_ERROR_PREFIX: &str = "APP_BEHIND:";
+
+/// Render [`MIN_APP_VERSION_FOR_CLI_UPGRADE`] as `x.y.z`.
+pub fn min_app_version_for_cli_upgrade_str() -> String {
+    let (a, b, c) = MIN_APP_VERSION_FOR_CLI_UPGRADE;
+    format!("{a}.{b}.{c}")
+}
+
+/// True when App semver is below the absolute CLI-upgrade floor.
+/// Unparseable versions fail-open (`false`).
+pub fn app_version_below_cli_upgrade_floor(app_version: &str) -> bool {
+    match crate::app_update::parse_semver(app_version) {
+        Some(v) => v < MIN_APP_VERSION_FOR_CLI_UPGRADE,
+        None => false,
+    }
+}
+
 /// Options for `grok update` install / channel switch / version pin.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CliUpdateInstallOpts {
@@ -78,6 +102,8 @@ pub struct CliUpdateInstallOpts {
     pub version: Option<String>,
     /// Pass `--force-reinstall` when true.
     pub force: bool,
+    /// User confirmed CLI install while App is behind (#1009).
+    pub acknowledge_app_behind: bool,
 }
 
 /// Validate version pin text for `--version` (semver-ish; no flags/path tricks).
@@ -166,6 +192,21 @@ pub struct CliUpdateCheck {
     /// Resolved binary path used for the check (App-side, not from JSON).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_path: Option<String>,
+    /// Running App version (`CARGO_PKG_VERSION`) — App-side enrichment (#1009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    /// Absolute App floor for CLI upgrades without acknowledge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_app_version: Option<String>,
+    /// Latest App on GitHub when the check could reach releases (#1009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_app_version: Option<String>,
+    /// True when GitHub reports a newer App than this binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_update_available: Option<bool>,
+    /// Soft gate: App below floor and/or newer App available — warn before CLI install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_behind: Option<bool>,
 }
 
 /// Parse stdout from `grok update --check --json` into a typed DTO.
@@ -249,7 +290,47 @@ fn parse_update_check_value(v: &Value) -> Result<CliUpdateCheck, String> {
         auto_update,
         error,
         cli_path: None,
+        app_version: None,
+        min_app_version: None,
+        latest_app_version: None,
+        app_update_available: None,
+        app_behind: None,
     })
+}
+
+/// Attach App-side compatibility fields for CLI upgrade UX (#1009).
+///
+/// `latest_app` / `app_update_available` come from a best-effort App update
+/// check (may be `None` when GitHub is unreachable). Floor always applies.
+pub fn enrich_cli_update_check_app_compat(
+    dto: &mut CliUpdateCheck,
+    app_version: &str,
+    latest_app: Option<&str>,
+    app_update_available: Option<bool>,
+) {
+    dto.app_version = Some(app_version.trim().to_string());
+    dto.min_app_version = Some(min_app_version_for_cli_upgrade_str());
+    dto.latest_app_version = latest_app
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    dto.app_update_available = app_update_available;
+    let floor_hit = app_version_below_cli_upgrade_floor(app_version);
+    let remote_behind = app_update_available == Some(true);
+    dto.app_behind = Some(floor_hit || remote_behind);
+}
+
+/// Build the structured soft-fail used when CLI install is gated (#1009).
+pub fn app_behind_install_error(app_version: &str, latest_app: Option<&str>) -> String {
+    let min = min_app_version_for_cli_upgrade_str();
+    match latest_app.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(latest) => format!(
+            "{APP_BEHIND_ERROR_PREFIX}App {app_version} → {latest} available (min {min}). Update the App before upgrading CLI, or acknowledge to continue."
+        ),
+        None => format!(
+            "{APP_BEHIND_ERROR_PREFIX}App {app_version} is below min {min} for CLI upgrades. Update the App first, or acknowledge to continue."
+        ),
+    }
 }
 
 fn string_field(v: &Value, keys: &[&str]) -> Option<String> {
@@ -330,10 +411,34 @@ fn strip_grok_prefix(v: &str) -> String {
 ///
 /// Channel switch and version pin never fall back to the App trust-chain
 /// (which always pulls stable latest). Soft-fail with Err instead.
+///
+/// When the running App is behind (absolute floor and/or newer App on GitHub),
+/// refuse unless `acknowledge_app_behind` (#1009). Network failure on the App
+/// check fails open (only the absolute floor still applies).
 pub async fn install_cli_update(
     app: tauri::AppHandle,
     opts: CliUpdateInstallOpts,
 ) -> Result<CliInstallResult, String> {
+    let app_ver = env!("CARGO_PKG_VERSION");
+    if !opts.acknowledge_app_behind {
+        let mut behind = app_version_below_cli_upgrade_floor(app_ver);
+        let mut latest_app: Option<String> = None;
+        match crate::app_update::check_app_update().await {
+            Ok(check) => {
+                latest_app = Some(check.latest_version.clone());
+                if check.update_available {
+                    behind = true;
+                }
+            }
+            Err(e) => {
+                warn!("cli_update_install: app update check soft-failed ({e}); floor-only gate");
+            }
+        }
+        if behind {
+            return Err(app_behind_install_error(app_ver, latest_app.as_deref()));
+        }
+    }
+
     let settings = crate::store::load_settings();
     let manual = settings.manual_cli_path.clone();
     let probe = cli_probe::probe_cli(manual.as_deref());
@@ -722,5 +827,40 @@ mod tests {
         assert!(!is_valid_cli_version_pin("-alpha"));
         assert!(!is_valid_cli_version_pin("a b"));
         assert!(!is_valid_cli_version_pin("no-digits"));
+    }
+
+    #[test]
+    fn app_version_below_cli_upgrade_floor_samples() {
+        assert!(app_version_below_cli_upgrade_floor("0.2.19"));
+        assert!(app_version_below_cli_upgrade_floor("v0.2.19"));
+        assert!(!app_version_below_cli_upgrade_floor("0.2.20"));
+        assert!(!app_version_below_cli_upgrade_floor("0.2.30"));
+        assert!(!app_version_below_cli_upgrade_floor("not-a-version"));
+    }
+
+    #[test]
+    fn enrich_cli_update_check_marks_app_behind() {
+        let mut dto = parse_update_check_json(SAMPLE_AVAILABLE).unwrap();
+        enrich_cli_update_check_app_compat(&mut dto, "0.2.19", Some("0.2.30"), Some(true));
+        assert_eq!(dto.app_version.as_deref(), Some("0.2.19"));
+        assert_eq!(dto.latest_app_version.as_deref(), Some("0.2.30"));
+        assert_eq!(dto.app_update_available, Some(true));
+        assert_eq!(dto.app_behind, Some(true));
+        assert_eq!(
+            dto.min_app_version.as_deref(),
+            Some(min_app_version_for_cli_upgrade_str().as_str())
+        );
+
+        let mut ok = parse_update_check_json(SAMPLE_AVAILABLE).unwrap();
+        enrich_cli_update_check_app_compat(&mut ok, "0.2.30", Some("0.2.30"), Some(false));
+        assert_eq!(ok.app_behind, Some(false));
+    }
+
+    #[test]
+    fn app_behind_install_error_prefixed() {
+        let err = app_behind_install_error("0.2.19", Some("0.2.30"));
+        assert!(err.starts_with(APP_BEHIND_ERROR_PREFIX));
+        assert!(err.contains("0.2.19"));
+        assert!(err.contains("0.2.30"));
     }
 }

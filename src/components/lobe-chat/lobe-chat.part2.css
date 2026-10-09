@@ -45,6 +45,29 @@
   flex-shrink: 0;
 }
 
+.grok-act__excerpt {
+  display: flex;
+  flex-direction: column;
+}
+.grok-act__excerpt-more {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 2px 0 2px calc(var(--grok-act-icon, 16px) + var(--grok-act-gap, 8px));
+  border: none;
+  background: transparent;
+  color: var(--chat-danger, #c44);
+  font-size: var(--grok-act-font, 13px);
+  font-weight: 400;
+  line-height: 1.45;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.grok-act__excerpt-more:hover {
+  text-decoration: underline;
+}
+
 .grok-act__steps {
   display: flex;
   flex-direction: column;
@@ -403,12 +426,19 @@
   border-radius: 8px;
   background: var(--chat-surface-2, rgb(255 255 255 / 3%));
 }
+.lobe-timeline-tool__pane {
+  position: relative;
+}
+.lobe-timeline-tool__copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  background: color-mix(in srgb, var(--chat-surface-2, rgb(0 0 0 / 45%)) 88%, transparent);
+}
 .lobe-timeline-tool__cmd {
-  padding: 6px 10px;
+  padding: 6px 34px 6px 10px;
   color: var(--chat-text-2);
-  /* Command sits directly above its output: join the two boxes. */
-  border-bottom: 0;
-  border-radius: 8px 8px 0 0;
   white-space: pre-wrap;
 }
 .lobe-timeline-tool__cmd-sigil {
@@ -416,12 +446,19 @@
   user-select: none;
 }
 .lobe-timeline-tool__output {
-  padding: 8px 10px;
+  padding: 8px 34px 8px 10px;
   color: var(--chat-text-2);
   max-height: 320px;
 }
-/* When a command box precedes the output, drop the doubled top corner. */
-.lobe-timeline-tool__cmd + .lobe-timeline-tool__output {
+.lobe-timeline-tool__detail {
+  padding-right: 34px;
+}
+/* Command above output: join the two boxes (panes wrap each pre). */
+.lobe-timeline-tool__pane:has(.lobe-timeline-tool__cmd):not(:last-child) .lobe-timeline-tool__cmd {
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.lobe-timeline-tool__pane:has(.lobe-timeline-tool__cmd) + .lobe-timeline-tool__pane .lobe-timeline-tool__output {
   border-radius: 0 0 8px 8px;
 }
 /* Inside a capped / virtual rail the outer list already scrolls — let the
@@ -547,6 +584,14 @@
   font-size: var(--grok-act-font);
   line-height: 1.4;
   font-family: inherit;
+}
+.grok-thought__hint {
+  margin: 2px 0 0 24px; /* 16 icon + 8 gap */
+  max-width: 36rem;
+  color: color-mix(in srgb, var(--chat-text-3, #9ca3af) 92%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
 }
 .grok-thought__caret {
   display: inline-flex;

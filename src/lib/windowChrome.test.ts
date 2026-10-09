@@ -32,13 +32,14 @@ describe("maximizeLooksNoop", () => {
 });
 
 describe("tauriDragRegion", () => {
-  it("disables JS start_dragging on Windows (CSS compositor caption stays)", () => {
-    expect(tauriDragRegion("win")).toBe("false");
+  it("enables JS start_dragging on every desktop host (#1075)", () => {
+    expect(tauriDragRegion("win")).toBe("deep");
     expect(tauriDragRegion("mac")).toBe("deep");
     expect(tauriDragRegion("linux")).toBe("deep");
+    expect(tauriDragRegion("other")).toBe("deep");
   });
 
-  it("keeps compositor caption drag on Windows false-regions", () => {
+  it("keeps CSS compositor caption drag on drag-region attributes", () => {
     const sidebar = readFileSync(
       join(__dirname, "../styles/sidebar.part1.css"),
       "utf8",

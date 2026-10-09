@@ -98,10 +98,27 @@ New Issue
 
 | Kind | Policy |
 |------|--------|
-| Small bugfix, clear root cause, tests | Squash-merge after CI / local check |
+| Functional logic fix (clear root cause, tests) | Squash-merge after CI / local check |
+| Style **bug** fix (broken layout / clipping / wrong chrome / invisible control — not redesign) | Squash-merge after CI / local check |
+| Frontend **UI / visual / IA** change (new chrome, restyle, layout redesign, new panels, copy/IA that changes how a screen looks) | **Do not merge in the agent pass.** Hold until end of the PR batch; maintainer decides |
 | Feature / large refactor | Request changes or design note first |
 | i18n / permission / agent protocol | Prefer maintainer re-verify against real CLI |
 | Security | Follow SECURITY.md; do not discuss exploits in public Issues |
+
+### Agent PR batch cadence (maintainer gate)
+
+When reviewing a batch of open PRs:
+
+1. **Auto-path (agent may merge):** functional logic + style **bug** fixes only — still must pass the checklist above.
+2. **Hold for maintainer:** any PR that changes what users **see** on a screen (CSS/layout redesign, new UI chrome, component restyle, settings IA visuals, dialogs/menus look-and-feel, marketing/website visuals, etc.). Label as “UI hold”; do not squash-merge.
+3. **End-of-batch report (required before asking to merge held PRs):** list every held PR with:
+   - PR number + title
+   - Which **pages / surfaces** change (e.g. Settings → Appearance, Composer, session sidebar, What’s New, website landing)
+   - What the user would notice after merge (before → after in plain language; screenshots or `gh pr diff` path summary when helpful)
+   - Risk notes (regression surface, i18n, dialogs.md / AppWorkbench freeze)
+4. Maintainer (铁柱) **拍板** which held PRs to merge; agent merges only after explicit yes.
+
+**Style bug vs UI change:** fixing “menu is transparent / clipped / wrong z-index” is a style bug → merge. “Make the menu look like glass / restyle spacing / new visual language” is UI → hold.
 
 ### Adopted community PRs (examples)
 
@@ -243,6 +260,43 @@ Prefer **delete remote soon after land**, then local. Do not force-push `main`. 
 4. Bump CHANGELOG unreleased notes if fixing on main  
 5. When enough P0/P1 landed → [release.md](./release.md)  
 6. **Branch hygiene:** `git fetch --prune`; drop merged remotes/locals and idle worktrees (see above)  
+
+---
+
+## Windows session freeze — ops notes
+
+Plan: `docs/plans/2026-09-09-windows-freeze-remediation.md`.
+
+### What was fixed (symptoms → lever)
+
+| Symptom | Lever |
+|---------|-------|
+| UI freezes mid-stream / on switch | Stream IPC + bg tool journal no longer run under session-map locks |
+| Session switch hangs on history load | 15s journal-load deadline; cached transcript kept; recoverable error |
+| Retry / reconnect stuck on 连接中 | Claim wait aligned to connect budget; `session_stop` client timeout then force-connect |
+| Orphan tool/shell after agent kill | Windows ACP spawn in process group + `taskkill /T /F` tree kill (local only; not SSH/WSL) |
+| One terminal tab blocks others | PTY map lock only clones handles; per-session write lock + backpressure timeout |
+
+### Structured diagnostics
+
+Look for these when correlating freezes:
+
+- Frontend console: `[session] journal_load_timeout` / `journal_load_failed` / `connect_claim_timeout`
+- Host tracing: `kill_process_tree:*`, `acp kill timeout: fallback process-tree kill`
+- Host: stream emit / tool journal persist must not hold `inner` / `background` (regression tests in `session_manager`)
+
+### Windows smoke matrix (before shipping freeze fixes)
+
+Run on a real Windows build (or CI Windows job) after lock/IPC+timeout stage, then again after process-tree+PTY stage:
+
+1. **Long stream** — multi-minute assistant + thought coalesce; UI stays responsive; switch chats mid-stream  
+2. **Rapid session switch** — open 5+ chats quickly; no stuck opening / journal spinner; timeout shows recoverable error with cache  
+3. **Retry while connecting** — force retry during 连接中; stop timeout still force-connects  
+4. **Tool subprocess cancel** — bash/long tool, Stop; no orphan console windows (Task Manager)  
+5. **Abnormal agent exit** — kill grok CLI mid-turn; App recovers to disconnected + cancel chip; reconnect works  
+6. **Two PTY tabs** — flood one terminal with output; second tab still accepts type/resize  
+
+Ship gate: stage A (locks + timeouts) can land first; stage B (tree-kill + PTY) after matrix passes.
 
 ---
 

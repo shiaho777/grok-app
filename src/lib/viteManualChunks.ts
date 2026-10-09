@@ -9,6 +9,18 @@ export function vendorManualChunk(id: string): string | undefined {
   if (at < 0) return;
   const rest = n.slice(at + marker.length);
 
+  // React core gets its own chunk: manual chunks opt out of Rollup's auto
+  // splitting, so a feature vendor chunk that also holds react-dom becomes a
+  // static dependency of every shell that uses JSX — entry included (this is
+  // what forced the 533KB tiptap chunk into the boot preload list).
+  if (
+    rest.startsWith("react/") ||
+    rest.startsWith("react-dom/") ||
+    rest.startsWith("react-is/") ||
+    rest.startsWith("scheduler/")
+  ) {
+    return "framework";
+  }
   if (rest.startsWith("@xterm/") || rest.startsWith("xterm/")) {
     return "xterm";
   }
@@ -18,6 +30,17 @@ export function vendorManualChunk(id: string): string | undefined {
     rest.startsWith("prosemirror-")
   ) {
     return "tiptap";
+  }
+  // Keep CodeMirror + style-mod + lezer in one chunk so StyleModule /
+  // HighlightStyle tag identity stay single-instance after code-splitting.
+  if (
+    rest.startsWith("@codemirror/") ||
+    rest.startsWith("@lezer/") ||
+    rest.startsWith("style-mod/") ||
+    rest.startsWith("crelt/") ||
+    rest.startsWith("w3c-keyname/")
+  ) {
+    return "codemirror";
   }
   if (
     rest.startsWith("react-markdown/") ||

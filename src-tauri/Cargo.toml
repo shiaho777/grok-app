@@ -1,6 +1,6 @@
 [package]
 name = "grok-app"
-version = "0.2.29"
+version = "0.2.36"
 description = "Grok — desktop workbench for Grok Build CLI"
 authors = ["RongleCat"]
 edition = "2021"
@@ -33,9 +33,11 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
+# Trimmed from "full": no `tokio::fs` / `tokio::signal` usage in this crate
+# (file IO goes through `spawn_blocking` + `std::fs`). Add a feature here
+# only when a new `tokio::<feature>::…` call site actually appears.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "net"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-thiserror = "2"
 parking_lot = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -48,6 +50,15 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 # a common reason users think only TUN "applies" the proxy).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart", "system-proxy", "blocking", "socks"] }
 futures-util = "0.3"
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+ipnet = "2"
+percent-encoding = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 base64 = "0.22"
 sha1 = "0.10"
 sha2 = "0.10"
@@ -70,6 +81,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 fs2 = "0.4"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 url = "2"
+scraper = "0.27"
 
 # Remote mirror host (HTTP + WS + token gate) — see src/mirror/
 axum = { version = "0.8", features = ["ws", "macros"] }
@@ -99,13 +111,22 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_SystemServices",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# COM `#[implement(IDropTarget)]` for late Windows file-drop (#1017).
+windows-core = "0.61"
 tauri-winrt-notification = "0.7"
+# Same crate Tauri uses — mark Ctrl+Tab as not a browser accelerator so JS sees it.
+webview2-com = "0.38"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
@@ -121,6 +142,8 @@ mac-notification-sys = "0.6"
 mac-usernotifications = "0.3"
 # Pet overlay: setPreventsActivation. Launch: NSApp.isActive / firstResponder.
 objc2 = "0.6"
+# Local NSEvent monitor for Doubao Fn / Globe voice → IME (#1030).
+block2 = "0.6"
 
 [profile.release]
 codegen-units = 1

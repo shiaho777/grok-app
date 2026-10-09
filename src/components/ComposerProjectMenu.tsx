@@ -9,6 +9,7 @@ import {
   IconCheck,
   IconChevronDown,
   IconFolder,
+  IconHome,
   IconPlus,
 } from "@/components/icons";
 import { Tip } from "@/components/ui/tooltip";
@@ -34,6 +35,8 @@ type Props = {
     addProject: string;
     /** Badge when project folder is missing on disk. */
     pathMissing?: string;
+    /** Open multi-root workspace manager (#1194). */
+    workspaceRoots?: string;
   };
   disabled?: boolean;
   /**
@@ -43,6 +46,8 @@ type Props = {
   variant?: "chip" | "context";
   onSelect: (project: ProjectOption | null) => void;
   onAdd: () => void;
+  /** When set and a project is active, show Workspace roots… */
+  onManageWorkspace?: () => void;
 };
 
 const LIST_MAX_H = 220;
@@ -55,6 +60,7 @@ export function ComposerProjectMenu({
   variant = "chip",
   onSelect,
   onAdd,
+  onManageWorkspace,
 }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -116,7 +122,7 @@ export function ComposerProjectMenu({
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
         >
-          <IconFolder size={14} />
+          {activeProject ? <IconFolder size={14} /> : <IconHome size={14} />}
           <span className={isContext ? "composer__context-label" : "chip__label"}>
             {label}
           </span>
@@ -146,7 +152,7 @@ export function ComposerProjectMenu({
                   setOpen(false);
                 }}
               >
-                <IconFolder size={14} aria-hidden />
+                <IconHome size={14} aria-hidden />
                 <span>{labels.noProject}</span>
               </button>
               <button
@@ -161,6 +167,20 @@ export function ComposerProjectMenu({
                 <IconPlus size={14} aria-hidden />
                 <span>{labels.addProject}</span>
               </button>
+              {onManageWorkspace && activeProject && labels.workspaceRoots ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="cpm__action"
+                  onClick={() => {
+                    setOpen(false);
+                    onManageWorkspace();
+                  }}
+                >
+                  <IconFolder size={14} aria-hidden />
+                  <span>{labels.workspaceRoots}</span>
+                </button>
+              ) : null}
             </div>
             {projects.length > 0 ? (
               <div

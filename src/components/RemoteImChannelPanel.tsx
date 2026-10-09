@@ -60,6 +60,7 @@ import {
 import { IconAlertTriangle, IconDoctor, IconPlus } from "@/components/icons";
 import { Select } from "@/components/Select";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { useLocalQrCode } from "@/hooks/useLocalQrCode";
 
 export interface RemoteImChannelPanelProps {
   locale: string;
@@ -228,6 +229,7 @@ export function RemoteImChannelPanel({
     "idle",
   );
   const [scanUri, setScanUri] = useState<string | null>(null);
+  const scanQr = useLocalQrCode(scanUri);
   const [scanDeviceCode, setScanDeviceCode] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -500,6 +502,22 @@ export function RemoteImChannelPanel({
     };
   }, [scanPhase, scanDeviceCode, channelId, t]);
 
+  const health = useMemo(() => {
+    const filled = new Set(
+      Object.entries(secrets)
+        .filter(([, v]) => v.trim().length > 0)
+        .map(([k]) => k),
+    );
+    return classifyChannelHealth({
+      instance,
+      bridgeRunning,
+      bridgeLinked,
+      secretKeysFilled: filled,
+      // Live form options (e.g. WeCom connect_mode) for honest soft status
+      draftOptions: values,
+    });
+  }, [instance, bridgeRunning, bridgeLinked, secrets, values, channelId]);
+
   if (!schema) {
     return (
       <div className="rim-panel__empty">
@@ -688,22 +706,6 @@ export function RemoteImChannelPanel({
       setScanPhase("idle");
     }
   };
-
-  const health = useMemo(() => {
-    const filled = new Set(
-      Object.entries(secrets)
-        .filter(([, v]) => v.trim().length > 0)
-        .map(([k]) => k),
-    );
-    return classifyChannelHealth({
-      instance,
-      bridgeRunning,
-      bridgeLinked,
-      secretKeysFilled: filled,
-      // Live form options (e.g. WeCom connect_mode) for honest soft status
-      draftOptions: values,
-    });
-  }, [instance, bridgeRunning, bridgeLinked, secrets, values, channelId]);
 
   const statusTone = health.badgeTone;
   const statusLabel = t(health.statusKey);
@@ -1065,7 +1067,7 @@ export function RemoteImChannelPanel({
           </p>
         </div>
       ) : null}
-{channelId === "lark" ? (
+{channelId === "feishu" || channelId === "lark" ? (
         <div className="rim-callout" data-feishu-guide="1" data-validate="validateFeishuConfig">
           <div className="rim-callout__title">
             {t("settings.remoteIm.feishu.guide.title")}
@@ -1115,11 +1117,13 @@ export function RemoteImChannelPanel({
             >
               {scanUri ? (
                 <>
-                  <img
-                    className="rim-scan__qr"
-                    alt="QR"
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(scanUri)}`}
-                  />
+                  {scanQr.dataUrl ? (
+                    <img className="rim-scan__qr" alt="QR" src={scanQr.dataUrl} />
+                  ) : scanQr.error ? (
+                    <span role="alert">{t("settings.remoteIm.scan.qrError")}</span>
+                  ) : (
+                    <span aria-busy="true" aria-hidden="true">…</span>
+                  )}
                   <span className="rim-scan__uri">{scanUri}</span>
                 </>
               ) : (

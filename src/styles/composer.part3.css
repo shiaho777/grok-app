@@ -518,28 +518,95 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
+  position: relative;
 }
 
+/*
+ * Packaged WKWebView: StyleModule (adoptedStyleSheets) can partially fail
+ * under Tauri CSP rewriting — gutters still lay out while .cm-content
+ * collapses or never paints. Mirror CM6 base layout in real CSS so edit
+ * mode does not depend on injected sheets for visibility.
+ */
 .rp-code-editor .cm-editor {
   height: 100%;
+  width: 100%;
+  display: flex !important;
+  flex-direction: column !important;
+  color: var(--text-primary, #abb2bf);
+  background: var(--bg-code, #0a0a0a);
+}
+
+html[data-theme="light"] .rp-code-editor .cm-editor {
+  background: var(--bg-code, #fafafa);
 }
 
 .rp-code-editor .cm-scroller {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+  overflow: auto !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.rp-code-editor .cm-gutters {
+  display: flex !important;
+  flex-direction: column;
+  flex-shrink: 0;
+  box-sizing: content-box;
+  padding-top: 0;
+  padding-bottom: 0;
+  min-height: 100%;
 }
 
 /* CM positions gutters from content paddingTop — do not pad gutters again. */
 .rp-code-editor .cm-content {
+  display: block !important;
+  flex: 1 1 auto !important;
+  flex-shrink: 0 !important;
   box-sizing: content-box;
+  min-width: 20ch;
+  width: max-content;
+  padding: 4px 0;
+  white-space: pre !important;
+  color: var(--text-primary, #abb2bf);
+  font-size: 13px;
+  line-height: 20px;
+  caret-color: var(--accent, #528bff);
 }
-.rp-code-editor .cm-gutters {
+
+.rp-code-editor .cm-line {
   box-sizing: content-box;
-  padding-top: 0;
-  padding-bottom: 0;
+  color: var(--text-primary, #abb2bf);
+  padding: 0 16px 0 12px;
+  line-height: 20px;
+  min-height: 20px;
 }
+
 .rp-code-editor .cm-line,
 .rp-code-editor .cm-gutterElement {
   line-height: 20px;
+}
+
+/* Temporary packaged-build probe — remove after the gutters-only bug is closed. */
+.rp-code-editor__probe {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 5;
+  max-width: calc(100% - 16px);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: #fff;
+  background: rgba(180, 40, 40, 0.92);
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .rp-editor__textarea {

@@ -57,6 +57,9 @@ describe("Remote IM UI chrome guard", () => {
   it("ChannelPanel Feishu/Lark guide + draft health without window.confirm", () => {
     const src = readFileSync(join(ROOT, "RemoteImChannelPanel.tsx"), "utf8");
     expect(src).toContain("data-feishu-guide");
+    expect(src).toMatch(
+      /channelId === "feishu" \|\| channelId === "lark"/,
+    );
     expect(src).toContain("draftOptions");
     expect(src).toContain("validateFeishuConfig");
     expect(src).not.toMatch(/window\.confirm/);

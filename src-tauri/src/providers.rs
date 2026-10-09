@@ -1160,9 +1160,20 @@ fn set_models_u32_field(text: &str, key: &str, value: u32) -> String {
     }
 }
 
+/// `grok` is the official `[models].default` token. A custom `[model.grok]`
+/// section must not steal Official Use (#1214).
+pub fn is_reserved_custom_provider_id(id: &str) -> bool {
+    let t = id.trim().to_ascii_lowercase();
+    t == OFFICIAL_DEFAULT_MODEL || t == "official"
+}
+
 fn route_from_default(def: Option<&str>, providers: &[CustomProvider]) -> (String, Option<String>) {
     if let Some(d) = def {
-        if providers.iter().any(|p| p.id == d) {
+        let d = d.trim();
+        if !d.is_empty()
+            && !is_reserved_custom_provider_id(d)
+            && providers.iter().any(|p| p.id == d)
+        {
             return ("custom".into(), Some(d.to_string()));
         }
     }
@@ -1353,7 +1364,31 @@ pub fn active_provider_append_prompt() -> Option<String> {
         .and_then(|p| p.append_prompt)
 }
 
-/// Model flag for `grok agent --model`.
+/// Owning `[model.<id>]` section for a composer / `app_models[].id` catalog id.
+///
+/// Used when the App picker stores the request-body id (e.g. `qwen3.8-27b`)
+/// while Grok Build `--model` only understands the TOML table name
+/// (`qwen38-local`). Official catalog ids are never remapped, even when a
+/// relay also lists `grok-4.6` in `app_models`. Section ids themselves are
+/// excluded — callers use `is_custom_provider_id` for those.
+pub fn custom_provider_id_for_catalog_model(catalog_id: &str) -> Option<String> {
+    let catalog_id = catalog_id.trim();
+    if catalog_id.is_empty() || is_official_catalog_model(catalog_id) {
+        return None;
+    }
+    let list = list_custom_providers().ok()?;
+    for p in &list.providers {
+        if p.id == catalog_id {
+            continue;
+        }
+        if p.model == catalog_id || p.models.iter().any(|m| m.id == catalog_id) {
+            return Some(p.id.clone());
+        }
+    }
+    None
+}
+
+/// Model flag for `grok agent --model` and ACP `session/set_model`.
 ///
 /// Grok Build behavior:
 /// - Generic custom route: pass the **provider section id** (e.g. `yunyi`) and
@@ -1361,16 +1396,27 @@ pub fn active_provider_append_prompt() -> Option<String> {
 /// - Explicit Grok Build proxy route: `AcpClient::spawn` replaces this alias
 ///   with the selected real catalog model after binding the native endpoint.
 /// - Official route: pass a catalog id (`grok-4.6`); needs `auth.json`.
+/// - Official route + stale custom `app_models[].id` (#1000): map back to the
+///   owning section id so spawn `--model` and later `session/set_model` agree.
+///   CLI `--model` does not resolve App-only `app_models` ids; ACP set_model can,
+///   which previously caused turn-1 official / turn-2 custom silent switches.
 pub fn agent_spawn_model_id(composer_model: &str) -> String {
     match active_route() {
         ActiveRoute::Custom { id } => id,
         ActiveRoute::Official => {
             let m = composer_model.trim();
             if m.is_empty() || is_custom_provider_id(m) || m == OFFICIAL_DEFAULT_MODEL {
-                OFFICIAL_CATALOG_MODEL.into()
-            } else {
-                m.into()
+                return OFFICIAL_CATALOG_MODEL.into();
             }
+            if is_official_catalog_model(m) {
+                return m.into();
+            }
+            // Picker stored app_models[].id / active `model =` while route is still
+            // official (common under session-scoped prefs + sticky settings.json).
+            if let Some(provider_id) = custom_provider_id_for_catalog_model(m) {
+                return provider_id;
+            }
+            m.into()
         }
     }
 }
@@ -1601,6 +1647,11 @@ pub fn upsert_custom_provider(input: UpsertProviderInput) -> Result<ProvidersLis
     let create_only = input.create_only.unwrap_or(false);
     if create_only && existing.is_some() {
         return Err(format!("provider id `{id}` already exists"));
+    }
+    if is_reserved_custom_provider_id(&id) && existing.is_none() {
+        return Err(format!(
+            "provider id `{id}` is reserved for Official Grok — pick another id"
+        ));
     }
     let prev_key = existing
         .and_then(|s| s.fields.get("api_key"))
@@ -2729,6 +2780,48 @@ mod tests {
             .ends_with("/v1/models"));
     }
 
+    fn sample_provider(id: &str) -> CustomProvider {
+        CustomProvider {
+            id: id.into(),
+            model: "m".into(),
+            base_url: "https://ex/v1".into(),
+            name: id.into(),
+            has_api_key: true,
+            api_backend: "responses".into(),
+            provider_mode: PROVIDER_MODE_GENERIC.into(),
+            is_default: false,
+            models: vec![],
+            efforts: vec![],
+            context_window: None,
+            base_url_full_path: false,
+            append_prompt: None,
+            supports_vision: false,
+            extra_headers: vec![],
+        }
+    }
+
+    #[test]
+    fn official_default_is_not_a_custom_route_even_if_id_collides() {
+        let grok = [sample_provider("grok")];
+        let (source, pid) = route_from_default(Some("grok"), &grok);
+        assert_eq!(source, "official");
+        assert_eq!(pid, None);
+
+        let relay = [sample_provider("relay")];
+        let (custom_src, custom_id) = route_from_default(Some("relay"), &relay);
+        assert_eq!(custom_src, "custom");
+        assert_eq!(custom_id.as_deref(), Some("relay"));
+    }
+
+    #[test]
+    fn reserved_custom_ids() {
+        assert!(is_reserved_custom_provider_id("grok"));
+        assert!(is_reserved_custom_provider_id("GROK"));
+        assert!(is_reserved_custom_provider_id("official"));
+        assert!(!is_reserved_custom_provider_id("grok-relay"));
+        assert!(!is_reserved_custom_provider_id("relay"));
+    }
+
     #[test]
     fn deepseek_balance_endpoint_strips_v1() {
         assert_eq!(
@@ -3533,6 +3626,62 @@ context_window = "1000000"
         assert!(should_sync_cli_auth_after_account_change(
             &ActiveRoute::Official
         ));
+    }
+
+    #[test]
+    fn spawn_model_maps_app_models_id_when_route_still_official() {
+        // #1000: picker stores app_models[].id; [models].default stays official.
+        // --model must receive the TOML section id, not the catalog id.
+        let _lock = crate::paths::APP_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "grok-app-spawn-model-1000-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let previous_home = std::env::var("GROK_APP_HOME").ok();
+        std::env::set_var("GROK_APP_HOME", &home);
+        let _ = ensure_agent_home();
+
+        let listed = upsert_custom_provider(UpsertProviderInput {
+            id: "qwen38-local".into(),
+            model: "qwen3.8-27b".into(),
+            base_url: "http://127.0.0.1:8080/v1".into(),
+            name: Some("Qwen local".into()),
+            api_key: Some("sk-test".into()),
+            api_backend: Some("chat_completions".into()),
+            provider_mode: Some(PROVIDER_MODE_GENERIC.into()),
+            set_as_default: Some(false),
+            create_only: Some(true),
+            models: Some(vec![ProviderModelEntry::named(
+                "qwen3.8-27b",
+                "Qwen3.8 27B",
+            )]),
+            efforts: None,
+            context_window: None,
+            base_url_full_path: None,
+            append_prompt: None,
+            supports_vision: None,
+            extra_headers: None,
+        })
+        .expect("upsert");
+        assert_eq!(listed.active_source, "official");
+
+        assert_eq!(
+            custom_provider_id_for_catalog_model("qwen3.8-27b").as_deref(),
+            Some("qwen38-local")
+        );
+        assert_eq!(agent_spawn_model_id("qwen3.8-27b"), "qwen38-local");
+        // Official catalog ids must not remap through a relay that also lists them.
+        assert_eq!(agent_spawn_model_id("grok-4.6"), "grok-4.6");
+        // Bare section id on official route still falls back to catalog (legacy).
+        assert_eq!(agent_spawn_model_id("qwen38-local"), OFFICIAL_CATALOG_MODEL);
+
+        match previous_home {
+            Some(value) => std::env::set_var("GROK_APP_HOME", value),
+            None => std::env::remove_var("GROK_APP_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

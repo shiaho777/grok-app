@@ -46,7 +46,9 @@ import { resolveWorkChromeLabel } from "@/lib/workChromeLabel";
 import {
   buildGrokActivitySteps,
   type GrokActivityStep,
+  type GrokPhaseItem,
 } from "@/lib/grokActivitySteps";
+import { collectPhaseErrorExcerpt } from "@/lib/phaseErrorExcerpt";
 import {
   resolveToolPrimaryLabel,
   toolExpandBody,
@@ -284,12 +286,18 @@ const GrokActivityStepRow = memo(function GrokActivityStepRow({
   lockCollapsed?: boolean;
   /**
    * Running / auto-collapse policy sync (parent). Applies even when currently
-   * expanded so running→finished collapses under default autoCollapse.
+   * expanded so streaming-thought→finished collapses under default autoCollapse.
+   * Tools never pass openWhileRunning (stay collapsed while running — #1018).
    * Never called on unmount.
    */
   onPolicySync?: (
     key: string,
-    opts: { hasBody: boolean; running: boolean; autoCollapse: boolean },
+    opts: {
+      hasBody: boolean;
+      running: boolean;
+      autoCollapse: boolean;
+      openWhileRunning?: boolean;
+    },
   ) => void;
   findQuery?: string;
   findActiveOccurrence?: number | null;
@@ -348,17 +356,18 @@ const GrokActivityStepRow = memo(function GrokActivityStepRow({
     };
   }, []);
 
-  // Policy: running → open; finished → toolStepDefaultOpen (autoCollapse).
+  // Policy: streaming thoughts → openWhileRunning; tools stay collapsed by
+  // default (including while running — #1018). Finished → autoCollapse pref.
   // User-toggled keys are ignored inside parent applyActivityStepExpandPolicy.
-  // Do not skip when expanded=true — that blocked running→finished collapse.
   useEffect(() => {
     if (!hasBody || !onPolicySync) return;
     onPolicySync(step.key, {
       hasBody: true,
       running,
       autoCollapse,
+      openWhileRunning: step.type === "thought",
     });
-  }, [running, autoCollapse, step.key, hasBody, onPolicySync]);
+  }, [running, autoCollapse, step.key, step.type, hasBody, onPolicySync]);
 
   const open = hasBody && expanded && !lockCollapsed;
   const showBody = open;
@@ -491,6 +500,7 @@ const GrokActivityStepRow = memo(function GrokActivityStepRow({
             <ToolExpandBody
               body={expand}
               className="lobe-timeline-tool__body grok-act__expand-body"
+              locale={locale}
             />
           ) : null
         ) : null}
@@ -508,7 +518,8 @@ const GrokActivityStepRow = memo(function GrokActivityStepRow({
  * When any step is expanded, leave VirtualList so fixed row height is not
  * broken — expanded body uses max-height + internal scroll instead.
  * Expand + userToggled keys live on the parent so remount keeps open state
- * and running→finished still auto-collapses when the user did not toggle.
+ * and streaming-thought→finished still auto-collapses when the user did not
+ * toggle. Running tools stay collapsed unless the user expands them (#1018).
  */
 export function GrokActivitySteps({
   steps,
@@ -541,7 +552,12 @@ export function GrokActivitySteps({
   const onPolicySync = useCallback(
     (
       key: string,
-      opts: { hasBody: boolean; running: boolean; autoCollapse: boolean },
+      opts: {
+        hasBody: boolean;
+        running: boolean;
+        autoCollapse: boolean;
+        openWhileRunning?: boolean;
+      },
     ) => {
       setExpandState((prev) => applyActivityStepExpandPolicy(prev, key, opts));
     },
@@ -814,22 +830,36 @@ export const TimelinePhaseBlock = memo(function TimelinePhaseBlock({
     }
   }, [phaseRunning, phase.id, stampPool]);
 
+  const phaseItems = useMemo((): GrokPhaseItem[] => {
+    if (phase.items?.length) return phase.items;
+    return [
+      ...phase.thoughts
+        .filter((t) => t.trim())
+        .map((text) => ({ kind: "thought" as const, text })),
+      ...phase.tools.map((tool) => ({ kind: "tool" as const, tool })),
+    ];
+  }, [phase.items, phase.thoughts, phase.tools]);
+
   const stepsResolved = useMemo(() => {
     if (!expanded) return [];
-    const items =
-      phase.items?.length
-        ? phase.items
-        : [
-            ...phase.thoughts
-              .filter((t) => t.trim())
-              .map((text) => ({ kind: "thought" as const, text })),
-            ...phase.tools.map((tool) => ({ kind: "tool" as const, tool })),
-          ];
-    return buildGrokActivitySteps(items, {
+    return buildGrokActivitySteps(phaseItems, {
       live: phase.live,
       messageStreaming: !!messageStreaming,
     });
-  }, [expanded, phase.items, phase.thoughts, phase.tools, phase.live, messageStreaming]);
+  }, [expanded, phaseItems, phase.live, messageStreaming]);
+
+  const errorExcerpt = useMemo(
+    () =>
+      expanded || phaseRunning
+        ? { rows: [], overflow: 0 }
+        : collectPhaseErrorExcerpt(phaseItems),
+    [expanded, phaseRunning, phaseItems],
+  );
+
+  const openPhase = useCallback(() => {
+    userToggled.current = true;
+    setOpen(true);
+  }, []);
 
   // Prefer the larger of wall-clock and timestamp span (see resolveWorkDurationSec).
   const durationSec = resolveWorkDurationSec({ liveSec, historySec });
@@ -853,6 +883,9 @@ export const TimelinePhaseBlock = memo(function TimelinePhaseBlock({
       data-phase-id={phase.id}
       data-live={phaseRunning ? "1" : "0"}
       data-expanded={expanded ? "1" : "0"}
+      data-error-excerpt={
+        !expanded && errorExcerpt.rows.length > 0 ? "1" : undefined
+      }
     >
       <button
         type="button"
@@ -886,6 +919,34 @@ export const TimelinePhaseBlock = memo(function TimelinePhaseBlock({
           messageContent={messageContent}
           onOpenExternalLink={onOpenExternalLink}
         />
+      ) : errorExcerpt.rows.length > 0 ? (
+        <div
+          className="grok-act__excerpt"
+          data-testid="timeline-phase-excerpt"
+        >
+          <GrokActivitySteps
+            steps={errorExcerpt.rows}
+            tr={tr}
+            locale={locale}
+            live={false}
+            findQuery={findQuery}
+            findActiveOccurrence={findActiveOccurrence}
+            messageContent={messageContent}
+            onOpenExternalLink={onOpenExternalLink}
+          />
+          {errorExcerpt.overflow > 0 ? (
+            <button
+              type="button"
+              className="grok-act__excerpt-more"
+              data-testid="timeline-phase-excerpt-more"
+              onClick={openPhase}
+            >
+              {tr("chat.phaseErrorsMore", {
+                n: String(errorExcerpt.overflow),
+              })}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

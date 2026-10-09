@@ -370,10 +370,44 @@ jobs:
           fi
           bash scripts/package-windows-portable.sh "$TAG"
 
+  # Hard gate: every matrix leg must succeed AND the Release must list every
+  # required installer. Without this, fail-fast:false lets mac/linux publish a
+  # Latest that is missing Windows (v0.2.32) while the overall workflow is red
+  # but easy to miss. Agents / maintainers must wait for this job.
+  gate-release-assets:
+    name: Gate — all platform installers present
+    needs: publish
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require every platform build + installer asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          fi
+          if [[ "$PUBLISH_RESULT" != "success" ]]; then
+            echo "::error::Platform matrix result=$PUBLISH_RESULT (need success). One of macOS-ARM64 / macOS-x64 / Windows-x64 / Linux-x64 failed — do not treat this Release as complete."
+            # Still list what landed so the missing platform is obvious.
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' 2>/dev/null | sort || true
+            exit 1
+          fi
+          bash scripts/assert-release-assets.sh "$TAG" --repo "$GITHUB_REPOSITORY"
+
   # After all platform builds: merge .sig + archives into rolling latest.json.
   # Skips cleanly when updater secrets were never used (no .sig on the release).
   assemble-updater:
-    needs: publish
+    needs: [publish, gate-release-assets]
     runs-on: ubuntu-22.04
     name: Assemble updater latest.json
     steps:
@@ -404,7 +438,7 @@ jobs:
   # Supply-chain floor (NEW-06): one SHA256SUMS over every published asset so
   # users can verify downloads. Runs after all platform builds have uploaded.
   checksums:
-    needs: [publish, assemble-updater]
+    needs: [publish, gate-release-assets, assemble-updater]
     runs-on: ubuntu-22.04
     name: Publish SHA256SUMS + website downloads
     steps:
@@ -427,6 +461,8 @@ jobs:
           # Download everything except a stale checksum file from a rebuild.
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*' || true
           rm -f SHA256SUMS
+          # Re-assert before aliases — Windows setup/portable must be on disk.
+          bash "${GITHUB_WORKSPACE}/scripts/assert-release-assets.sh" "$TAG" --repo "$GITHUB_REPOSITORY"
           # Stable aliases (Grok_mac_x64.dmg, Grok_windows_x64-setup.exe, …)
           # + downloads.json for grok-app.com. Files stay on GitHub Releases.
           python3 "${GITHUB_WORKSPACE}/scripts/publish-website-downloads.py" \

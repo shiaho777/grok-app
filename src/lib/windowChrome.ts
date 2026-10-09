@@ -36,12 +36,17 @@ export function shouldFakeMaximizeFallback(platform: AppPlatform): boolean {
 
 /**
  * `data-tauri-drag-region` value.
- * Windows: `"false"` so Tauri's drag.js skips `start_dragging`. That IPC
- * move plus `-webkit-app-region: drag` north-resized the frame. CSS still
- * applies compositor caption drag on the same attribute.
+ *
+ * All desktop hosts use `"deep"` so Tauri drag.js can `start_dragging`.
+ * Windows previously used `"false"` (#786) to avoid JS drag + CSS
+ * `-webkit-app-region: drag` north-resizing the frame; that left Win10 /
+ * older WebView2 with no working caption drag when CSS app-region is
+ * unsupported (#1075). Host `window_min` already skips `set_min_size`
+ * while the pointer is down / maximized, which was the geometric half of
+ * #786 — keep that, and restore JS drag so the titlebar always moves.
  */
-export function tauriDragRegion(platform: AppPlatform): "false" | "deep" {
-  return platform === "win" ? "false" : "deep";
+export function tauriDragRegion(_platform: AppPlatform): "false" | "deep" {
+  return "deep";
 }
 
 export function osMaximizeWaitMs(allowFakeFallback: boolean): number {
