@@ -59,14 +59,14 @@ describe("toolStepsAutoCollapsePref", () => {
     expect(loadToolStepsAutoCollapsePref(s)).toBe(true);
   });
 
-  it("toolStepDefaultOpen: running always open; finished follows pref", () => {
-    expect(toolStepDefaultOpen(true, true)).toBe(true);
+  it("toolStepDefaultOpen: follows pref only (running does not force open)", () => {
+    expect(toolStepDefaultOpen(true, true)).toBe(false);
     expect(toolStepDefaultOpen(true, false)).toBe(true);
     expect(toolStepDefaultOpen(false, true)).toBe(false);
     expect(toolStepDefaultOpen(false, false)).toBe(true);
     // Default arg uses DEFAULT_TOOL_STEPS_AUTO_COLLAPSE (true)
     expect(toolStepDefaultOpen(false)).toBe(false);
-    expect(toolStepDefaultOpen(true)).toBe(true);
+    expect(toolStepDefaultOpen(true)).toBe(false);
   });
 
   it("resolveFoldExpanded follows default until the user toggles", () => {
@@ -100,7 +100,7 @@ describe("toolStepsAutoCollapsePref", () => {
     ).toBe(false);
   });
 
-  it("workPhaseDefaultOpen: live stays expanded; done collapses unless errors", () => {
+  it("workPhaseDefaultOpen: live stays expanded; done collapses even with errors", () => {
     expect(
       workPhaseDefaultOpen({
         running: true,
@@ -128,7 +128,7 @@ describe("toolStepsAutoCollapsePref", () => {
         errorCount: 1,
         autoCollapse: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       workPhaseDefaultOpen({
         running: false,

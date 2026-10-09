@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
@@ -657,9 +657,32 @@ async fn bind_http_with_retry(
     Err(last)
 }
 
+/// Tell every attached surface (desktop WebView + all mirror clients) that the
+/// sessions index changed, so each can re-run `sessions.list`.
+///
+/// Fire on Host index writes that the desktop UI does not already refresh
+/// in-process (turn persist). Mirror RPC create/rename/autoTitle also use this.
+pub fn notify_sessions_changed<R: tauri::Runtime>(
+    app: Option<&AppHandle<R>>,
+    reason: &str,
+    session_id: &str,
+) {
+    if let Some(app) = app {
+        fanout_event(
+            app,
+            "sessions://changed",
+            json!({ "reason": reason, "sessionId": session_id }),
+        );
+    }
+}
+
 /// Emit to desktop WebView **and** mirror WS clients (DESIGN §7.3).
 /// Prefer this over bare `app.emit` for all `session://*` chat events.
-pub fn fanout_event(app: &AppHandle, name: &str, payload: impl Serialize + Clone) {
+pub fn fanout_event<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+    payload: impl Serialize + Clone,
+) {
     let _ = app.emit(name, payload.clone());
     if let Some(host) = app.try_state::<Arc<MirrorHost>>() {
         match serde_json::to_value(&payload) {

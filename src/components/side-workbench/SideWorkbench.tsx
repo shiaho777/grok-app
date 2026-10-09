@@ -28,7 +28,7 @@ import {
 } from "@/lib/sideWorkbench";
 import { isShortcutRecordingActive } from "@/lib/shortcutRemap";
 import * as api from "@/lib/api";
-import type { ResourceOpenTarget } from "@/components/ResourceViewer";
+import type { ResourceOpenTarget } from "@/components/resource-viewer/types";
 import type { SkillInfo } from "@/lib/slashCatalog";
 import type { SkillsPickerSkill } from "@/lib/skillsTaskPicker";
 import { FilesWorkspace } from "./FilesWorkspace";
@@ -55,6 +55,10 @@ export type SideWorkbenchProps = {
   onToggleDockComposer?: () => void;
   paneActive?: boolean;
   sessionChanges?: SessionFileChange[];
+  /** Host-lifted focus from turn changed-files chips (#998). */
+  reviewFocusPath?: string | null;
+  reviewFocusToken?: number;
+  reviewPinnedPaths?: readonly string[];
   plan?: PlanReviewState | null;
   planFocusKey?: number | null;
   /** PLAN-MODE-PRO empty-state context for Plan tab. */
@@ -91,6 +95,9 @@ export function SideWorkbench({
   onToggleDockComposer,
   paneActive = true,
   sessionChanges = [],
+  reviewFocusPath: reviewFocusPathProp = null,
+  reviewFocusToken: reviewFocusTokenProp = 0,
+  reviewPinnedPaths = [],
   plan = null,
   planFocusKey = null,
   planChrome = null,
@@ -118,6 +125,9 @@ export function SideWorkbench({
     sideTabId: string;
   } | null>(null);
   const closeTokenRef = useRef(0);
+  /** Turn changed-files chip → Review scroll target (#998). */
+  const [reviewFocusPath, setReviewFocusPath] = useState<string | null>(null);
+  const [reviewFocusToken, setReviewFocusToken] = useState(0);
   const [bulkCloseConfirm, setBulkCloseConfirm] = useState<{
     next: SideWorkbenchState;
     dirtyCount: number;
@@ -324,8 +334,14 @@ export function SideWorkbench({
           name: openRequest.title,
         }),
       );
-    } else if (openRequest.type === "changes" && isGitProject) {
+    } else if (openRequest.type === "changes") {
+      // Session tool edits do not require git — always open Review (#998).
       setState(openSideTab(state, "review"));
+      const focus = (openRequest.path || "").trim();
+      if (focus) {
+        setReviewFocusPath(focus);
+        setReviewFocusToken((n) => n + 1);
+      }
     }
     onOpenRequestConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -415,6 +431,13 @@ export function SideWorkbench({
                 sessionChanges={sessionChanges}
                 isGitProject={isGitProject}
                 onOpenFile={onTreeFileOpen}
+                focusPath={reviewFocusPathProp || reviewFocusPath}
+                focusToken={
+                  reviewFocusTokenProp > 0
+                    ? reviewFocusTokenProp
+                    : reviewFocusToken
+                }
+                pinnedFocusPaths={reviewPinnedPaths}
               />
             ) : null}
 

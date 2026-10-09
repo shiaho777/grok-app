@@ -4,7 +4,7 @@ Product rules for the slash palette, skill chips, mode markers, and Doctor.
 
 ## Workspace chip (desktop)
 
-Desktop chat **always** shows `ComposerProjectMenu` on the context bar above the input (`composer__context-bar`), including the unbound **默认工作区 / Default workspace** state. The menu reuses the existing picker: list projects, add a folder, or clear back to the default workspace (`workspaces/general` cwd). Git worktree chip stays only when a real project folder is bound.
+Desktop chat **always** shows `ComposerProjectMenu` on the context bar above the input (`composer__context-bar`), including the unbound **默认工作区 / Default workspace** state. The sidebar unbound group, archived-orphan group, and Kanban unbound column use the same name. The menu reuses the existing picker: list projects, add a folder, or clear back to the default workspace (`workspaces/general` cwd). Git worktree chip stays only when a real project folder is bound.
 
 Phone layout does **not** mount this bar — project pick/add stays on `PhoneComposerToolsSheet`. Sidebar **Projects** `+` remains a second entry.
 
@@ -134,7 +134,7 @@ Helpers: `src/lib/skillCatalogRefresh.ts`. Wired in `useSessionHostEvents` (`onS
 
 - **Prefs:** `{app_data}/extensions.json` — `mcp` / `skills` name → `bool`. Missing name = **enabled** (opt-out).
 - **UI:** Toggle persists immediately (`extensions_set_mcp` / `extensions_set_skill`). Bulk enable via `extensions_enable_all_*`.
-- **MCP inject (session open):** Host builds ACP `mcpServers` from `grok mcp list --json` (full command/args/env or url) filtered by prefs, and passes them on `session/new` / `session/load` (see `acp_client::open_session`).
+- **MCP inject (session open):** Host builds ACP `mcpServers` from `grok mcp list --json` / `config.toml` plus enabled plugin `.mcp.json` (plugin-root vars expanded), filtered by prefs, and passes them on `session/new` / `session/load` (see `acp_client::open_session`).
 - **Dual write:** Independent mode also mirrors `enabled` under agent-home `config.toml` (`[mcp_servers.<name>]`). Shared mode updates `~/.grok/config.toml` enabled flags on user toggle.
 - **Live agent:** MCP pref change → `SessionManager::apply_extensions_mcp_change` soft-respawns so the next connect re-injects.
 - **Skills:** App filter only (slash palette / chips). Agent still discovers skill files on disk.

@@ -10,6 +10,14 @@ const rust = readFileSync(
 const css = readFileSync(resolve(__dirname, "../styles/settings.part3.css"), "utf8");
 
 describe("theme editor OS window", () => {
+  it("opens at a compact default height with scrollable body", () => {
+    expect(rust).toMatch(/const EDITOR_HEIGHT:\s*f64\s*=\s*600\.0/);
+    expect(css).toContain(".theme-editor-shell__body .settings-appearance-interface");
+    expect(css).toMatch(
+      /\.theme-editor-shell__body \.settings-appearance-interface\s*\{[^}]*overflow-y:\s*auto/s,
+    );
+  });
+
   it("uses main-window chrome: Overlay on mac, frameless caption on Win/Linux", () => {
     expect(rust).toContain("THEME_EDITOR_WINDOW_LABEL");
     expect(rust).toContain("TitleBarStyle::Overlay");
@@ -21,6 +29,18 @@ describe("theme editor OS window", () => {
     expect(app).toContain("data-tauri-drag-region");
     expect(css).toContain(".theme-editor-shell__chrome");
     expect(css).toContain("-webkit-app-region: drag");
+  });
+
+  it("tracks main-window aspect for wallpaper focus / export bake", () => {
+    expect(app).toContain("watchWallpaperViewportAspect");
+    const focusEditor = readFileSync(
+      resolve(__dirname, "./WallpaperFocusEditor.tsx"),
+      "utf8",
+    );
+    expect(focusEditor).toContain("watchWallpaperViewportAspect");
+    expect(focusEditor).not.toMatch(
+      /function readViewportAspect\(\):\s*number\s*\{[^}]*window\.innerWidth/s,
+    );
   });
 
   it("does not boot the workbench shell", () => {

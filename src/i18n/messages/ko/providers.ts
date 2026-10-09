@@ -86,6 +86,7 @@ export const koProviders = {
   "prov.presetCustom": "사용자 지정",
   "prov.preset.deepseek.blurb": "공식 DeepSeek API — V4 Flash + Flash Vision Exp + Pro, thinking low/high/xhigh/max",
   "prov.preset.openrouter.blurb": "OpenRouter — GLM-5.3 Flash, chat_completions, 1M 컨텍스트, 비전 켜짐",
+  "prov.preset.orcarouter.blurb": "OrcaRouter — OpenAI 호환 멀티 프로바이더 게이트웨이, Auto Router, 비전 켜짐",
   "prov.preset.amux.blurb": "Amux 릴레이 — Grok 4.6 / 4.5, 공식 effort low/medium/high/xhigh",
   "prov.preset.yunApi.blurb": "Yun API (yunyi) — Grok 4.6 / 4.5, 공식 effort low/medium/high/xhigh",
   "prov.preset.opencodeGo.blurb": "OpenCode Zen Go — DeepSeek V4 via chat_completions (Responses 아님)",

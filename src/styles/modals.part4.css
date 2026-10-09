@@ -769,13 +769,14 @@
 
 .ext-plugin-install__row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
 .ext-plugin-install__input {
-  flex: 1;
+  flex: 1 1 220px;
   min-width: 0;
 }
 

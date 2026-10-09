@@ -16,7 +16,7 @@
         "transparent": false,
         "center": true,
         "shadow": true,
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       }
     ]
   }

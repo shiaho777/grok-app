@@ -90,3 +90,65 @@ export function canStopWithStopLatch(
   if (latch.phase === "force_idle") return false;
   return hostState === "streaming" || hostState === "awaiting_permission";
 }
+
+/**
+ * True while a Stop latch is armed for this chat.
+ * Callers must keep the composer Ready so late Host "streaming" events cannot
+ * flip Send back to Stop after the user already interrupted the turn.
+ */
+export function shouldHoldReadyAfterUserStop(
+  latch: StopLatchState,
+  sessionId: string | null | undefined,
+): boolean {
+  if (latch.phase === "idle") return false;
+  if (!latch.sessionId) return true;
+  if (!sessionId) return false;
+  return latch.sessionId === sessionId;
+}
+
+/**
+ * After `sessionStop` IPC returns: keep force_idle until a Host ready/idle
+ * event clears the latch.
+ *
+ * Do **not** clear here from the optimistic local map — Stop already painted
+ * Ready locally, so reading liveMap would always look idle and drop the latch
+ * while Host may still be streaming (composer flips back to Stop / Send dies).
+ */
+export function settleStopLatchAfterSessionStop(
+  latch: StopLatchState,
+  hostState?: SessionState,
+): StopLatchState {
+  if (latch.phase === "idle") return latch;
+  // Optional hostState: only clear when caller knows Host has already settled.
+  if (
+    hostState != null &&
+    !isSessionLiveStreaming(hostState) &&
+    hostState !== "awaiting_permission" &&
+    canSend(hostState)
+  ) {
+    return createStopLatchState();
+  }
+  return {
+    phase: "force_idle",
+    sessionId: latch.sessionId,
+    startedAt: latch.startedAt,
+  };
+}
+
+/**
+ * Map Host busy → Ready while a Stop latch holds this chat.
+ * Keeps liveMap / liveHost / composer FSM from re-sticking after interrupt.
+ */
+export function projectStateAfterUserStop(
+  hostState: SessionState,
+  latch: StopLatchState,
+  sessionId: string | null | undefined,
+): SessionState {
+  if (
+    shouldHoldReadyAfterUserStop(latch, sessionId) &&
+    (isSessionLiveStreaming(hostState) || hostState === "awaiting_permission")
+  ) {
+    return "ready";
+  }
+  return hostState;
+}

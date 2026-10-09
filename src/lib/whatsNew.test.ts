@@ -108,31 +108,31 @@ describe("parseChangelogNotes", () => {
     expect(parseChangelogNotes(FIXTURE, "9.9.9", "en")).toBeNull();
   });
 
-  it("does not truncate the version body at a capital Z (JS has no \\Z anchor)", () => {
-    // `\Z` in a JS regex is a literal "Z": with that anchor the lazy body
-    // stopped at the first capital Z and dropped every later section.
+  it("reads the whole section even when a capital Z appears mid-body", () => {
     const md = [
-      "## [1.2.3] - 2026-08-01",
-      "",
-      "### Added",
-      "- Zebra feature ships today.",
-      "- Zoom support added.",
+      "## [1.2.4] - 2026-09-01",
       "",
       "### Fixed",
-      "- Crash no more.",
+      "- Zoom hotkeys work again.",
+      "- ZDR wallpaper blocks show a hint.",
+      "- Windows tray quits cleanly.",
       "",
-      "## [1.2.2] - 2026-07-01",
+      "**中文 · 修复**",
+      "- 缩放快捷键恢复。",
       "",
-      "### Added",
-      "- Old row.",
+      "## [1.2.3]",
+      "",
+      "### Fixed",
+      "- Older entry.",
     ].join("\n");
-    const notes = parseChangelogNotes(md, "1.2.3", "en");
-    expect(notes?.sections.map((s) => s.id)).toEqual(["added", "fixed"]);
+    const notes = parseChangelogNotes(md, "1.2.4", "en");
     expect(notes?.sections[0]?.items).toEqual([
-      "Zebra feature ships today.",
-      "Zoom support added.",
+      "Zoom hotkeys work again.",
+      "ZDR wallpaper blocks show a hint.",
+      "Windows tray quits cleanly.",
     ]);
-    expect(notes?.sections[1]?.items).toEqual(["Crash no more."]);
+    const zh = parseChangelogNotes(md, "1.2.4", "zh");
+    expect(zh?.sections[0]?.items).toEqual(["缩放快捷键恢复。"]);
   });
 });
 

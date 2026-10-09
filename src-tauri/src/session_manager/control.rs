@@ -1,6 +1,5 @@
 //! Policy, model, disconnect, recycle, permission resolution.
 
-#![allow(dead_code)] // residual-clippy: set_permission_policy / tracked counts
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +15,7 @@ use crate::store::{self};
 use super::*;
 
 impl SessionManager {
+    #[allow(dead_code)]
     pub fn set_permission_policy(&self, policy: PermissionPolicy) {
         if let Some(s) = self.inner.lock().as_mut() {
             s.policy = policy;
@@ -31,6 +31,96 @@ impl SessionManager {
     /// Background busy sessions are left untouched.
     pub async fn soft_respawn(&self, app: &AppHandle) {
         self.soft_respawn_with_reason(app, "settings").await;
+    }
+
+    /// Clear the stored agent session id and drop any idle ACP for `session_id`.
+    ///
+    /// Process-level spawn flags (`--rules`, `--system-prompt-override`,
+    /// folder trust / AGENTS.md) only apply on a fresh `session/new`. Keeping
+    /// `agent_session_id` would resume via `session/load` and ignore the new
+    /// flags — same class as effort/model changes.
+    pub async fn invalidate_spawn_flags_for_session(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        reason: &str,
+    ) {
+        let _ = store::clear_session_agent_session_id(session_id);
+        // Keep in-memory meta aligned so a mid-turn no-op connect cannot
+        // resume the pre-change agent id after the turn ends.
+        {
+            let mut guard = self.inner.lock();
+            if let Some(s) = guard.as_mut() {
+                if s.app_session_id == session_id {
+                    s.meta.agent_session_id = None;
+                    s.needs_history_bootstrap = true;
+                }
+            }
+        }
+        if let Some(bg) = self.background.lock().get_mut(session_id) {
+            bg.meta.agent_session_id = None;
+            bg.needs_history_bootstrap = true;
+        }
+        if self.is_live_session(session_id) {
+            // soft_respawn already defers when the live turn is busy.
+            self.soft_respawn_with_reason(app, reason).await;
+            return;
+        }
+        // Background mid-turn: queue like effort/policy changes. Dropping now
+        // kills an in-flight answer and removes the map entry before
+        // ProcessExited can finish journal / cancel bookkeeping (#1177 follow-up).
+        let bg_busy = self
+            .with_session_mut(session_id, |s| Self::live_session_is_busy(s))
+            .unwrap_or(false);
+        if bg_busy {
+            self.pending_soft_respawn
+                .lock()
+                .insert(session_id.to_string(), reason.to_string());
+            tracing::info!(
+                session = %session_id,
+                reason = %reason,
+                "spawn-flag invalidate deferred: background session mid-turn"
+            );
+            return;
+        }
+        self.drop_idle_agent_for_session(session_id, reason).await;
+    }
+
+    /// Drop background / parked ACP so the next connect cold-spawns.
+    pub async fn drop_idle_agent_for_session(&self, session_id: &str, reason: &str) {
+        let background = self.background.lock().remove(session_id);
+        if let Some(mut s) = background {
+            let process_id = s.process_id.clone();
+            if let Some(acp) = s.acp.take() {
+                if self.has_other_process_tenant(&process_id, session_id) {
+                    tracing::info!(
+                        session = %session_id,
+                        process = %process_id,
+                        reason = %reason,
+                        "invalidate spawn flags detached shared background ACP"
+                    );
+                } else {
+                    Self::kill_acp_bounded(&acp).await;
+                    tracing::info!(
+                        session = %session_id,
+                        reason = %reason,
+                        "dropped background agent after spawn-flag invalidate"
+                    );
+                }
+            }
+            return;
+        }
+        let parked = self.parked.lock().remove(session_id);
+        if let Some(p) = parked {
+            if !self.has_other_process_tenant(&p.process_id, session_id) {
+                Self::kill_acp_bounded(&p.acp).await;
+                tracing::info!(
+                    session = %session_id,
+                    reason = %reason,
+                    "dropped parked agent after spawn-flag invalidate"
+                );
+            }
+        }
     }
 
     /// Soft-respawn and tell the UI why the agent process was reloaded.
@@ -170,6 +260,7 @@ impl SessionManager {
 
     /// Counts of tracked live shell / background / parked entries (alive or not).
     /// Used by diagnostics and unit tests — not the same as `active_process_count`.
+    #[allow(dead_code)]
     pub fn tracked_agent_map_counts(&self) -> (usize, usize, usize) {
         let live = self.inner.lock().is_some() as usize;
         let background = self.background.lock().len();
@@ -936,6 +1027,8 @@ impl SessionManager {
         acp.respond_permission(rpc_id, outcome).await?;
 
         // Success path only: clear pending, cache session-allow, leave AwaitingPermission.
+        let mut pending_emits = Vec::new();
+        let mut pending_persists = Vec::new();
         let empty_run = self
             .with_session_mut(&target, |s| {
                 if s.pending_permission_rpc_id == Some(rpc_id) {
@@ -951,9 +1044,16 @@ impl SessionManager {
                     let _ = s.fsm.permission_resolved_continue();
                 }
                 // Permission cleared — may finish a deferred prompt_complete (#52).
-                Self::try_finish_deferred_prompt_complete(s, Some(&app)).flatten()
+                Self::try_finish_deferred_prompt_complete(
+                    s,
+                    Some(&mut pending_emits),
+                    Some(&mut pending_persists),
+                )
+                .flatten()
             })
             .flatten();
+        Self::emit_stream_payloads(&app, pending_emits);
+        Self::commit_session_persists(Some(&app), pending_persists);
 
         // Cross-session permission audit (user decision). Soft-fail.
         crate::audit_ledger::record_permission_resolve(
@@ -1046,14 +1146,23 @@ impl SessionManager {
         let id = id.ok_or_else(|| "no pending plan approval".to_string())?;
         let acp = acp.ok_or_else(|| "ACP client missing".to_string())?;
         acp.respond_exit_plan_mode(id, &decision, feedback).await?;
+        let mut pending_emits = Vec::new();
+        let mut pending_persists = Vec::new();
         let empty_run = self
             .with_session_mut(&target, |s| {
                 if s.pending_plan_rpc_id == Some(id) || rpc_id == Some(id) {
                     s.pending_plan_rpc_id = None;
                 }
-                Self::try_finish_deferred_prompt_complete(s, Some(&app)).flatten()
+                Self::try_finish_deferred_prompt_complete(
+                    s,
+                    Some(&mut pending_emits),
+                    Some(&mut pending_persists),
+                )
+                .flatten()
             })
             .flatten();
+        Self::emit_stream_payloads(&app, pending_emits);
+        Self::commit_session_persists(Some(&app), pending_persists);
         self.emit_for_session(&app, &target);
         Self::emit_empty_run_if_any(&app, empty_run);
         Ok(self.snapshot())
@@ -1089,14 +1198,23 @@ impl SessionManager {
             _ => AskUserOutcome::Cancelled,
         };
         acp.respond_ask_user_question(id, outcome).await?;
+        let mut pending_emits = Vec::new();
+        let mut pending_persists = Vec::new();
         let empty_run = self
             .with_session_mut(&target, |s| {
                 if s.pending_ask_user_rpc_id == Some(id) || rpc_id == Some(id) {
                     s.pending_ask_user_rpc_id = None;
                 }
-                Self::try_finish_deferred_prompt_complete(s, Some(&app)).flatten()
+                Self::try_finish_deferred_prompt_complete(
+                    s,
+                    Some(&mut pending_emits),
+                    Some(&mut pending_persists),
+                )
+                .flatten()
             })
             .flatten();
+        Self::emit_stream_payloads(&app, pending_emits);
+        Self::commit_session_persists(Some(&app), pending_persists);
         self.emit_for_session(&app, &target);
         Self::emit_empty_run_if_any(&app, empty_run);
         Ok(self.snapshot())

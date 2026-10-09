@@ -141,9 +141,10 @@ export const ComposerSendCluster = memo(function ComposerSendCluster({
         type="button"
         className="icon-btn icon-btn--primary"
         disabled={
-          (!effectiveCanSend && !shouldEnqueue) ||
-          !hasBody ||
-          sessionState === "awaiting_permission"
+          // Do not also gate on awaiting_permission: canSend already blocks it,
+          // and a post-Stop force_idle unlock must leave Send clickable even if
+          // Host still briefly reports awaiting_permission.
+          (!effectiveCanSend && !shouldEnqueue) || !hasBody
         }
         onClick={onSend}
         aria-label={tr("composer.send")}

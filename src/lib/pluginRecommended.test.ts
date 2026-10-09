@@ -6,6 +6,8 @@ import {
   findChatCutInstalledPlugin,
   isChatCutInstalled,
   isOpenaiPluginsSource,
+  isXApiInstalled,
+  X_API_INSTALL_SOURCE,
   normalizeMarketplaceLocator,
   pickDefaultInstallableFilter,
   pluginDisplayName,
@@ -70,6 +72,20 @@ describe("pluginRecommended", () => {
     ).toBe(true);
     expect(isChatCutInstalled([{ name: "vercel" }])).toBe(false);
     expect(findChatCutInstalledPlugin([{ name: "codex" }])?.name).toBe("codex");
+  });
+
+  it("matches x-api by name or RongleCat git source", () => {
+    expect(isXApiInstalled([{ name: "x-api" }])).toBe(true);
+    expect(
+      isXApiInstalled([
+        {
+          name: "other",
+          source: "https://github.com/RongleCat/x-api",
+        },
+      ]),
+    ).toBe(true);
+    expect(isXApiInstalled([{ name: "vercel" }])).toBe(false);
+    expect(X_API_INSTALL_SOURCE).toBe("https://github.com/RongleCat/x-api");
   });
 
   it("pluginDisplayName maps codex/chatcut to ChatCut once", () => {

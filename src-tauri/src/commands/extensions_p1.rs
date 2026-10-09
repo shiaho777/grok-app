@@ -176,18 +176,44 @@ pub async fn inspect_mcp(project_path: Option<String>) -> Result<serde_json::Val
 
     let mut servers = parsed.as_ref().map(parse_mcp_servers).unwrap_or_default();
     let prefs = crate::extensions::load_prefs();
+    let plugin_defs = crate::plugin_mcp::discover_plugin_mcp_servers();
+    let plugin_names: std::collections::HashSet<String> =
+        plugin_defs.iter().map(|d| d.name.clone()).collect();
     // Enrich with enable state for UI toggles.
-    let mut server_json = Vec::with_capacity(servers.len());
+    let mut server_json = Vec::with_capacity(servers.len() + plugin_defs.len());
+    let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in servers.drain(..) {
         let enabled = crate::extensions::is_enabled(&prefs.mcp, &s.name);
+        let from_plugin = plugin_names.contains(&s.name);
+        listed.insert(s.name.clone());
+        let plugin_name = from_plugin.then(|| s.name.clone());
+        let auth_kind = plugin_defs
+            .iter()
+            .find(|d| d.name == s.name)
+            .and_then(crate::plugin_mcp::plugin_auth_kind_for_def);
         server_json.push(serde_json::json!({
             "name": s.name,
             "transport": s.transport,
             "target": s.target,
-            "vendor": s.vendor,
+            "vendor": if from_plugin {
+                Some("plugin".to_string())
+            } else {
+                s.vendor
+            },
             "compatibilityStatus": s.compatibility_status,
+            "fromPlugin": from_plugin,
+            "pluginName": plugin_name,
+            "authKind": auth_kind,
             "enabled": enabled,
         }));
+    }
+    for def in plugin_defs {
+        if listed.contains(&def.name) {
+            continue;
+        }
+        let enabled = crate::extensions::is_enabled(&prefs.mcp, &def.name);
+        listed.insert(def.name.clone());
+        server_json.push(crate::plugin_mcp::mcp_def_to_inspect_json(&def, enabled));
     }
     let mut out = serde_json::json!({ "servers": server_json });
     if let Some(err) = error {

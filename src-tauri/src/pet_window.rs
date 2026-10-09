@@ -744,6 +744,10 @@ fn apply_window_chrome(win: &tauri::WebviewWindow) {
     let _ = win.set_focusable(pet_overlay_focusable(cfg!(target_os = "linux")));
     apply_pet_prevents_activation(win);
     detach_native_menu(win);
+    // Tauri skip_taskbar can leave WS_EX_APPWINDOW on this Windows build, so
+    // Explorer shows a second Grok taskbar icon (#1221). Re-assert TOOLWINDOW.
+    #[cfg(windows)]
+    crate::win_shell::set_overlay_skip_taskbar(win);
     if pet_wayland_display() {
         let _ = win.set_ignore_cursor_events(false);
     }
@@ -938,6 +942,16 @@ fn yield_key_to_main(app: &AppHandle, after_show: bool) {
         return;
     }
     let _ = main.set_focus();
+    // `set_focus` uses tao's deprecated `activateIgnoringOtherApps`. On macOS
+    // 14+ a background-launched / tray-restored app can end up with a key
+    // window while NSApp stays INACTIVE, so the next click only activates the
+    // app and is eaten. Re-assert modern activation + first responder exactly
+    // like the launch focus guardian does (no-op on non-macOS).
+    let main_for_keys = main.clone();
+    let _ = main.run_on_main_thread(move || {
+        crate::force_ns_app_activate();
+        crate::point_keys_at_webview(&main_for_keys);
+    });
 }
 
 fn emit_prefs(app: &AppHandle, prefs: &PetPrefs) {

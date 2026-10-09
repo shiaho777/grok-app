@@ -12,6 +12,15 @@ export const CHATCUT_RECOMMENDED_ID = "chatcut-codex";
 export const CHATCUT_CODEX_INSTALL_SOURCE =
   "https://github.com/ChatCut-Inc/agent-plugin#codex";
 
+/** Stable recommended row id for the X API plugin. */
+export const X_API_RECOMMENDED_ID = "x-api";
+
+/** Public git install source. Never auto-install. */
+export const X_API_INSTALL_SOURCE = "https://github.com/RongleCat/x-api";
+
+/** Names treated as x-api when matching installed plugins. */
+export const X_API_INSTALLED_NAMES = ["x-api"] as const;
+
 /** Built-in marketplace source URL (ensure-add, never delete others). */
 export const OPENAI_PLUGINS_MARKETPLACE_URL =
   "https://github.com/openai/plugins";
@@ -110,6 +119,34 @@ export function findChatCutInstalledPlugin<T extends PluginLikeForMatch>(
   if (!plugins?.length) return null;
   for (const p of plugins) {
     if (isChatCutInstalled([p])) return p;
+  }
+  return null;
+}
+
+/** True when installed list already has x-api (name or git source). */
+export function isXApiInstalled(
+  plugins: readonly PluginLikeForMatch[] | null | undefined,
+): boolean {
+  if (!plugins?.length) return false;
+  for (const p of plugins) {
+    const name = (p.name ?? "").trim().toLowerCase();
+    if ((X_API_INSTALLED_NAMES as readonly string[]).includes(name)) {
+      return true;
+    }
+    const blob = [p.path, p.source, p.marketplace]
+      .map((x) => (x ?? "").toLowerCase())
+      .join(" ");
+    if (blob.includes("ronglecat/x-api")) return true;
+  }
+  return false;
+}
+
+export function findXApiInstalledPlugin<T extends PluginLikeForMatch>(
+  plugins: readonly T[] | null | undefined,
+): T | null {
+  if (!plugins?.length) return null;
+  for (const p of plugins) {
+    if (isXApiInstalled([p])) return p;
   }
   return null;
 }
@@ -242,10 +279,17 @@ export async function ensureOpenaiPluginsMarketplace(
  */
 export function resolveExtensionsTabId(
   tab: string | null | undefined,
-): "plugins" | "skills" | "mcp" | "agents" | "hooks" {
+): "plugins" | "skills" | "mcp" | "agents" | "hooks" | "rules" | "commands" {
   const t = (tab ?? "").trim().toLowerCase();
   if (t === "market" || t === "apps" || !t) return "plugins";
-  if (t === "skills" || t === "mcp" || t === "agents" || t === "hooks") {
+  if (
+    t === "skills" ||
+    t === "mcp" ||
+    t === "agents" ||
+    t === "hooks" ||
+    t === "rules" ||
+    t === "commands"
+  ) {
     return t;
   }
   if (t === "plugins") return "plugins";

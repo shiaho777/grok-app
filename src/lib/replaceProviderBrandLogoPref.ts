@@ -16,11 +16,11 @@ export const REPLACE_PROVIDER_BRAND_LOGO_CHANGE_EVENT =
 export const DEFAULT_REPLACE_PROVIDER_BRAND_LOGO = false;
 
 /**
- * Shared height (px) for every swappable sidebar brand mark.
- * Wordmarks scale by height (`height: N; width: auto`); icon-only marks
- * (Volcengine Ark, Amux, Zhipu) use the same height as `size`.
+ * Shared height (px) for every swappable sidebar brand mark in the nav row.
+ * Matches default nav item icons (16). Wordmarks scale by height
+ * (`height: N; width: auto`); icon-only marks use the same height as `size`.
  */
-export const SIDEBAR_BRAND_LOGO_HEIGHT = 18;
+export const SIDEBAR_BRAND_LOGO_HEIGHT = 16;
 
 /** Minimal storage surface so unit tests need no jsdom. */
 export interface ReplaceProviderBrandLogoStorage {

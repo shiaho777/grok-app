@@ -7,6 +7,13 @@ import type {
 } from "./types";
 import { isTurnPromptMessage } from "./types";
 import {
+  EMPTY_USER_KEY,
+  isClientOptimisticId,
+  reconcileOptimisticDuplicates,
+  stripUserAttachmentRefs,
+  userBubbleDedupeKey,
+} from "./rewind";
+import {
   appendContentToSegments,
   appendThoughtToSegments,
   compactMessageSegments,
@@ -176,6 +183,113 @@ export function dedupeCurrentTurnAssistants(
 }
 
 /**
+ * Apply a Host-authored user turn (mirror / other window / API send).
+ *
+ * Local composers already paint an optimistic `u-…` bubble; when the Host
+ * UUID arrives, reconcile that row instead of duplicating. Mirror clients
+ * that never ran local optimistic UI get the user row + a live assistant shell.
+ */
+export function applyRemoteUserMessage(
+  messages: ChatMessage[],
+  user: ChatMessage,
+  streamMessageId?: string | null,
+): ChatMessage[] {
+  if (!user?.id || user.role !== "user") return messages;
+  if (messages.some((m) => m.id === user.id)) {
+    return ensureLiveAssistantAfterUser(
+      reconcileOptimisticDuplicates(messages),
+      user.id,
+      streamMessageId,
+    );
+  }
+
+  const cleanedUser = stripUserAttachmentRefs(user);
+  const userKey = userBubbleDedupeKey(cleanedUser);
+
+  // Scan every user row (not only the tail). After idle reconnect / journal
+  // rehydrate the last user may already be a Host UUID; the optimistic `u-…`
+  // can sit above it — matching only the tail would append a duplicate.
+  if (userKey !== EMPTY_USER_KEY) {
+    let optimisticIdx = -1;
+    let existingRealIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (!m || m.role !== "user" || m.marker === "interjection") continue;
+      if (userBubbleDedupeKey(m) !== userKey) continue;
+      const id = m.id || "";
+      if (
+        isClientOptimisticId(id) ||
+        /^u-\d/.test(id) ||
+        id.startsWith("u-auto-") ||
+        id.startsWith("u-batch-")
+      ) {
+        if (optimisticIdx < 0) optimisticIdx = i;
+      } else if (existingRealIdx < 0) {
+        existingRealIdx = i;
+      }
+    }
+
+    if (optimisticIdx >= 0) {
+      const next = messages.map((m, i) =>
+        i === optimisticIdx
+          ? {
+              ...cleanedUser,
+              attachments: cleanedUser.attachments?.length
+                ? cleanedUser.attachments
+                : m.attachments,
+            }
+          : m,
+      );
+      return ensureLiveAssistantAfterUser(
+        reconcileOptimisticDuplicates(next),
+        user.id,
+        streamMessageId,
+      );
+    }
+
+    if (existingRealIdx >= 0) {
+      return ensureLiveAssistantAfterUser(
+        reconcileOptimisticDuplicates(messages),
+        user.id,
+        streamMessageId,
+      );
+    }
+  }
+
+  const next = [...messages, cleanedUser];
+  return ensureLiveAssistantAfterUser(
+    reconcileOptimisticDuplicates(next),
+    user.id,
+    streamMessageId,
+  );
+}
+
+function ensureLiveAssistantAfterUser(
+  messages: ChatMessage[],
+  userId: string,
+  streamMessageId?: string | null,
+): ChatMessage[] {
+  const userIdx = messages.findIndex((m) => m.id === userId);
+  if (userIdx < 0) return messages;
+  const after = messages.slice(userIdx + 1);
+  const hasLive = after.some((m) => m.role === "assistant" && m.streaming);
+  if (hasLive) return messages;
+  const postId =
+    (typeof streamMessageId === "string" && streamMessageId.trim()) ||
+    `a-pending-${userId}`;
+  if (messages.some((m) => m.id === postId)) return messages;
+  return [
+    ...messages,
+    {
+      id: postId,
+      role: "assistant",
+      content: "",
+      streaming: true,
+    },
+  ];
+}
+
+/**
  * Insert a mid-turn user interjection and freeze the assistant segment above it.
  * Post-interjection stream chunks carry a fresh host message id and append a new row.
  *
@@ -191,6 +305,7 @@ export function applyInterjection(
   interjection: ChatMessage,
   postStreamMessageId?: string | null,
 ): ChatMessage[] {
+  interjection = stripUserAttachmentRefs(interjection);
   const existingIndex = messages.findIndex(
     (message) => message.id === interjection.id,
   );

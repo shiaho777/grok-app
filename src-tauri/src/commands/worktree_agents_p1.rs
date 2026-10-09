@@ -127,7 +127,7 @@ pub async fn workflows_list(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    let mode = store::load_settings().session_data_mode.clone();
+    let mode = store::load_settings_async().await.session_data_mode.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         crate::agent_workflows::discover_workflows(project.as_deref(), &mode)
     })
@@ -509,14 +509,32 @@ pub async fn cli_doctor_fix(id: String) -> Result<serde_json::Value, String> {
 // from PR #63
 
 /// Run resolved `grok update --check --json` and return a typed DTO.
+///
+/// Also attaches App compatibility fields (#1009): current App version, absolute
+/// floor, and a best-effort GitHub App-update probe so the UI can warn before
+/// installing a newer CLI while the App bundle is behind.
 #[tauri::command]
 pub async fn cli_update_check() -> Result<crate::cli_update::CliUpdateCheck, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    let mut dto = tauri::async_runtime::spawn_blocking(|| {
         let settings = store::load_settings();
         crate::cli_update::check_cli_update(settings.manual_cli_path.as_deref())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+
+    let app_ver = env!("CARGO_PKG_VERSION");
+    let (latest_app, app_update_available) =
+        match crate::app_update::check_app_update().await {
+            Ok(check) => (Some(check.latest_version), Some(check.update_available)),
+            Err(_) => (None, None),
+        };
+    crate::cli_update::enrich_cli_update_check_app_compat(
+        &mut dto,
+        app_ver,
+        latest_app.as_deref(),
+        app_update_available,
+    );
+    Ok(dto)
 }
 
 // from PR #63 / channel UX (CLI ≥ 0.2.117)
@@ -526,17 +544,22 @@ pub async fn cli_update_check() -> Result<crate::cli_update::CliUpdateCheck, Str
 /// Optional `channel` (`stable`|`alpha`), `version` pin, and `force` reinstall.
 /// Channel switch and version pin are mutually exclusive; unknown channels error
 /// (never invented). Plain update still falls back to App install trust-chain.
+///
+/// When the App is behind (#1009), pass `acknowledge_app_behind: true` after the
+/// UI warning; otherwise Host soft-fails with an `APP_BEHIND:` error.
 #[tauri::command]
 pub async fn cli_update_install(
     app: tauri::AppHandle,
     channel: Option<String>,
     version: Option<String>,
     force: Option<bool>,
+    acknowledge_app_behind: Option<bool>,
 ) -> Result<crate::cli_install::CliInstallResult, String> {
     let opts = crate::cli_update::CliUpdateInstallOpts {
         channel,
         version,
         force: force.unwrap_or(false),
+        acknowledge_app_behind: acknowledge_app_behind.unwrap_or(false),
     };
     crate::cli_update::install_cli_update(app, opts).await
 }
@@ -647,6 +670,21 @@ pub async fn git_worktree_add(
     let start = sanitize_worktree_ref(start_point.as_deref())?;
     let layout_kind = normalize_worktree_layout(layout.as_deref());
 
+    // Worktree add materializes a full checkout (spawn + disk-heavy) — the
+    // blocking pool keeps it from stalling the async runtime.
+    tauri::async_runtime::spawn_blocking(move || {
+        git_worktree_add_blocking(project, safe_name, start, layout_kind)
+    })
+    .await
+    .map_err(|e| format!("git worktree add worker panicked: {e}"))?
+}
+
+fn git_worktree_add_blocking(
+    project: String,
+    safe_name: String,
+    start: Option<String>,
+    layout_kind: &'static str,
+) -> Result<GitWorktreeAddResult, String> {
     // Resolve main worktree path (first porcelain entry) for path placement.
     let list_out = crate::process_util::command("git")
         .args(["-C", &project, "worktree", "list", "--porcelain"])
@@ -777,6 +815,20 @@ pub async fn git_worktree_gc(
     let forced = force.unwrap_or(false);
     let age = sanitize_worktree_gc_max_age(max_age.as_deref())?;
 
+    // Prune scans + removes admin files across the repo — blocking pool.
+    tauri::async_runtime::spawn_blocking(move || {
+        git_worktree_gc_blocking(project, dry_run, forced, age)
+    })
+    .await
+    .map_err(|e| format!("git worktree gc worker panicked: {e}"))?
+}
+
+fn git_worktree_gc_blocking(
+    project: String,
+    dry_run: bool,
+    forced: bool,
+    age: Option<String>,
+) -> Result<GitWorktreeGcResult, String> {
     // Snapshot prunable entries before prune for UI preview / summary.
     let prunable = {
         let list_out = crate::process_util::command("git")
@@ -884,6 +936,19 @@ pub async fn git_worktree_remove(
         return Err("invalid worktree path".into());
     }
 
+    // `git worktree remove` deletes a full checkout tree — blocking pool.
+    tauri::async_runtime::spawn_blocking(move || {
+        git_worktree_remove_blocking(project, target, force.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| format!("git worktree remove worker panicked: {e}"))?
+}
+
+fn git_worktree_remove_blocking(
+    project: String,
+    target: String,
+    forced: bool,
+) -> Result<GitWorktreeRemoveResult, String> {
     let list_out = crate::process_util::command("git")
         .args(["-C", &project, "worktree", "list", "--porcelain"])
         .output()
@@ -915,7 +980,6 @@ pub async fn git_worktree_remove(
         .map(|w| w.path.clone())
         .unwrap_or(target.clone());
 
-    let forced = force.unwrap_or(false);
     // Safe argv — never go through a shell.
     // `git worktree remove [--force] <path>`
     let mut args: Vec<String> = vec![

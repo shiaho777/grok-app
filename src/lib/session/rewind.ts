@@ -1,3 +1,7 @@
+import {
+  mergeAttachments,
+  parseAttachmentsFromContent,
+} from "../attachments";
 import type { ChatMessage, MessageSegment, SessionState } from "./types";
 import { isTurnPromptMessage } from "./types";
 import {
@@ -157,6 +161,49 @@ export function rewindKeepPromptIndex(
   return clickedUserPromptIndex - 1;
 }
 
+/** Same keep-index rule from a disk rewind-point count (not the UI cache). */
+export function rewindKeepPromptIndexFromCount(
+  clickedUserPromptIndex: number,
+  userCount: number,
+): number | null {
+  if (clickedUserPromptIndex < 0 || clickedUserPromptIndex >= userCount) {
+    return null;
+  }
+  if (clickedUserPromptIndex < userCount - 1) return clickedUserPromptIndex;
+  if (clickedUserPromptIndex === 0) return null;
+  return clickedUserPromptIndex - 1;
+}
+
+export type RewindPointLike = {
+  promptIndex: number;
+  messageId?: string | null;
+};
+
+/** Prefer Host journal points so UI cache bubbles after an agent restart
+ * cannot send a Host index the live agent session does not have (#1216). */
+export async function resolveRewindKeepForUserMessage(input: {
+  messageId: string;
+  messages: ChatMessage[];
+  loadPoints?: () => Promise<RewindPointLike[]>;
+}): Promise<{ keep: number | null; reason: "ok" | "unavailable" | "missing" }> {
+  if (input.loadPoints) {
+    try {
+      const points = await input.loadPoints();
+      const hit = points.find((p) => p.messageId === input.messageId);
+      if (!hit) return { keep: null, reason: "unavailable" };
+      return {
+        keep: rewindKeepPromptIndexFromCount(hit.promptIndex, points.length),
+        reason: "ok",
+      };
+    } catch {
+      /* local journal index */
+    }
+  }
+  const idx = userPromptIndexOf(input.messages, input.messageId);
+  if (idx < 0) return { keep: null, reason: "missing" };
+  return { keep: rewindKeepPromptIndex(input.messages, idx), reason: "ok" };
+}
+
 /**
  * First discarded user prompt after a rewind — restore into the composer
  * so the user can edit and send again instead of losing the text.
@@ -280,6 +327,8 @@ export function forkSessionTitle(sourceTitle: string | undefined | null): string
 export function isClientOptimisticId(id: string): boolean {
   return (
     /^u-\d+$/.test(id) ||
+    id.startsWith("u-auto-") ||
+    id.startsWith("u-batch-") ||
     id.startsWith("a-pending-") ||
     /^a-\d+$/.test(id) ||
     /^t-\d+$/.test(id)
@@ -292,6 +341,48 @@ export function stripClientOptimistic(
 ): ChatMessage[] {
   return messages.filter((m) => !isClientOptimisticId(m.id));
 }
+
+/**
+ * Peel trailing sole-line `@/abs/path` dual-write off a user bubble and fold
+ * those paths into structured attachments. Host journal stores both; the
+ * optimistic composer row only has the display body + cards.
+ */
+export function stripUserAttachmentRefs(message: ChatMessage): ChatMessage {
+  if (message.role !== "user") return message;
+  const parsed = parseAttachmentsFromContent(message.content ?? "");
+  const merged = mergeAttachments(parsed.attachments, message.attachments ?? []);
+  const nextContent = parsed.text;
+  const sameText = nextContent === (message.content ?? "");
+  const sameAtts =
+    merged.length === (message.attachments?.length ?? 0) &&
+    merged.every((a, i) => a.path === message.attachments?.[i]?.path);
+  if (sameText && sameAtts) return message;
+  return {
+    ...message,
+    content: nextContent,
+    attachments: merged.length ? merged : message.attachments,
+  };
+}
+
+/**
+ * Match optimistic `u-${ts}` rows to the host UUID even when journal
+ * dual-wrote `@/path` lines the composer never showed.
+ */
+export function userBubbleDedupeKey(message: ChatMessage): string {
+  const parsed = parseAttachmentsFromContent(message.content ?? "");
+  // Windows composers may keep CRLF; Host journal normalizes to LF.
+  const text = parsed.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  const paths = new Set<string>();
+  for (const a of message.attachments ?? []) {
+    if (a.path) paths.add(a.path);
+  }
+  for (const a of parsed.attachments) {
+    if (a.path) paths.add(a.path);
+  }
+  return `${text}\n---\n${[...paths].sort().join("\n")}`;
+}
+
+export const EMPTY_USER_KEY = "\n---\n";
 
 /**
  * Remove optimistic user/pending-assistant rows that host journal already
@@ -307,9 +398,10 @@ export function reconcileOptimisticDuplicates(
   const realUsersByContent = new Map<string, ChatMessage>();
   for (const m of messages) {
     if (m.role === "user" && !isClientOptimisticId(m.id)) {
-      const key = m.content.trim();
-      if (key && !realUsersByContent.has(key)) {
-        realUsersByContent.set(key, m);
+      const key = userBubbleDedupeKey(m);
+      if (key === EMPTY_USER_KEY) continue;
+      if (!realUsersByContent.has(key)) {
+        realUsersByContent.set(key, stripUserAttachmentRefs(m));
       }
     }
   }
@@ -324,7 +416,7 @@ export function reconcileOptimisticDuplicates(
 
   for (const m of messages) {
     if (m.role === "user" && isClientOptimisticId(m.id)) {
-      const real = realUsersByContent.get(m.content.trim());
+      const real = realUsersByContent.get(userBubbleDedupeKey(m));
       if (real) {
         if (!placedRealUserIds.has(real.id)) {
           out.push(real);
@@ -337,7 +429,7 @@ export function reconcileOptimisticDuplicates(
     }
     if (m.role === "user" && !isClientOptimisticId(m.id)) {
       if (placedRealUserIds.has(m.id)) continue;
-      out.push(m);
+      out.push(stripUserAttachmentRefs(m));
       placedRealUserIds.add(m.id);
       continue;
     }

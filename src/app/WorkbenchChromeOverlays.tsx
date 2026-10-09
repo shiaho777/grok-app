@@ -8,18 +8,15 @@
 import { lazy, Suspense } from "react";
 import { ArchiveAgeConfirmModal } from "@/components/workbench-modals/ArchiveAgeConfirmModal";
 import { PromptHistoryClearModal } from "@/components/workbench-modals/PromptHistoryClearModal";
+import { SessionMruSwitcher } from "@/components/SessionMruSwitcher";
 import { ShortcutsHelpModal } from "@/components/workbench-modals/ShortcutsHelpModal";
 import { WorktreeCreateModal } from "@/components/workbench-modals/WorktreeCreateModal";
 import { WorktreeGcModal } from "@/components/workbench-modals/WorktreeGcModal";
-import {
-  WorktreeShipModal,
-  type WorktreeShipSuccess,
-} from "@/components/workbench-modals/WorktreeShipModal";
+import { WorktreeShipModal } from "@/components/workbench-modals/WorktreeShipModal";
 import type { Locale } from "@/i18n";
-import type { GitWorktreeGcResult } from "@/lib/api";
 import type { AppPlatform } from "@/lib/appPlatform";
 import type { ComposerSendKeyPref } from "@/lib/composerSendKey";
-import type { WorktreeLayout } from "@/lib/gitWorktree";
+import type { GitWorktreeChromeOverlay } from "@/hooks/useGitWorktreeChrome";
 import type { ArchiveAgePlan } from "@/lib/sessionArchiveAge";
 import type { ShortcutRemapMap } from "@/lib/shortcutRemap";
 import type { VoiceSessionChipInput } from "@/lib/voiceCommandCenter";
@@ -69,45 +66,7 @@ export type WorkbenchChromeOverlaysProps = {
   archiveAgeBusy: boolean;
   closeArchiveAge: () => void;
   onConfirmArchiveAge: () => void;
-  worktreeCreateOpen: boolean;
-  worktreeCreateBusy: boolean;
-  worktreeCreateStartChat: boolean;
-  worktreeCreateName: string;
-  worktreeCreateLayout: WorktreeLayout;
-  worktreeCreateRef: string;
-  worktreeCreatePreviewPath: string | null;
-  worktreeCreateError: string | null;
-  closeWorktreeCreate: () => void;
-  submitWorktreeCreate: () => void;
-  onWorktreeCreateNameChange: (value: string) => void;
-  onWorktreeCreateLayoutChange: (value: WorktreeLayout) => void;
-  onWorktreeCreateRefChange: (value: string) => void;
-  worktreeGcOpen: boolean;
-  worktreeGcBusy: boolean;
-  worktreeGcPreviewBusy: boolean;
-  worktreeGcForce: boolean;
-  worktreeGcPreview: GitWorktreeGcResult | null;
-  worktreeGcError: string | null;
-  closeWorktreeGc: () => void;
-  submitWorktreeGc: () => void;
-  setWorktreeGcForce: (value: boolean) => void;
-  shipOpen: boolean;
-  shipBusy: boolean;
-  shipSuccess: WorktreeShipSuccess | null;
-  shipTitle: string;
-  shipBody: string;
-  shipCreatePr: boolean;
-  shipDraft: boolean;
-  shipBranch: string | null;
-  shipStatus: string | null;
-  shipError: string | null;
-  closeShip: () => void;
-  submitShip: () => void;
-  onShipTitleChange: (value: string) => void;
-  onShipBodyChange: (value: string) => void;
-  setShipCreatePr: (value: boolean) => void;
-  setShipDraft: (value: boolean) => void;
-  onOpenPrHubFromShip: (prNumber: number | null) => void;
+  worktreeChrome: GitWorktreeChromeOverlay;
   showToast: (message: string, ms: number) => void;
   showShortcuts: boolean;
   composerSendKeyPref: ComposerSendKeyPref;
@@ -144,8 +103,10 @@ export function WorkbenchChromeOverlays(p: WorkbenchChromeOverlaysProps) {
     setupOpen: p.setupOpen,
     tutorialOpen: p.showProductTutorial,
   });
+  const wt = p.worktreeChrome;
   return (
     <>
+      <SessionMruSwitcher locale={p.locale} />
       {p.showDoctor ? (
         <Suspense fallback={null}>
           <DoctorModal
@@ -184,51 +145,51 @@ export function WorkbenchChromeOverlays(p: WorkbenchChromeOverlaysProps) {
       />
       <WorktreeCreateModal
         locale={p.locale}
-        open={p.worktreeCreateOpen}
-        busy={p.worktreeCreateBusy}
-        startChat={p.worktreeCreateStartChat}
-        name={p.worktreeCreateName}
-        layout={p.worktreeCreateLayout}
-        startRef={p.worktreeCreateRef}
-        previewPath={p.worktreeCreatePreviewPath}
-        error={p.worktreeCreateError}
-        onClose={p.closeWorktreeCreate}
-        onSubmit={p.submitWorktreeCreate}
-        onNameChange={p.onWorktreeCreateNameChange}
-        onLayoutChange={p.onWorktreeCreateLayoutChange}
-        onRefChange={p.onWorktreeCreateRefChange}
+        open={wt.create.open}
+        busy={wt.create.busy}
+        startChat={wt.create.startChat}
+        name={wt.create.name}
+        layout={wt.create.layout}
+        startRef={wt.create.startRef}
+        previewPath={wt.create.previewPath}
+        error={wt.create.error}
+        onClose={wt.create.close}
+        onSubmit={wt.create.submit}
+        onNameChange={wt.create.setName}
+        onLayoutChange={wt.create.setLayout}
+        onRefChange={wt.create.setRef}
       />
       <WorktreeGcModal
         locale={p.locale}
-        open={p.worktreeGcOpen}
-        busy={p.worktreeGcBusy}
-        previewBusy={p.worktreeGcPreviewBusy}
-        force={p.worktreeGcForce}
-        preview={p.worktreeGcPreview}
-        error={p.worktreeGcError}
-        onClose={p.closeWorktreeGc}
-        onSubmit={p.submitWorktreeGc}
-        onForceChange={p.setWorktreeGcForce}
+        open={wt.gc.open}
+        busy={wt.gc.busy}
+        previewBusy={wt.gc.previewBusy}
+        force={wt.gc.force}
+        preview={wt.gc.preview}
+        error={wt.gc.error}
+        onClose={wt.gc.close}
+        onSubmit={wt.gc.submit}
+        onForceChange={wt.gc.setForce}
       />
       <WorktreeShipModal
         locale={p.locale}
-        open={p.shipOpen}
-        busy={p.shipBusy}
-        success={p.shipSuccess}
-        title={p.shipTitle}
-        body={p.shipBody}
-        createPr={p.shipCreatePr}
-        draft={p.shipDraft}
-        branch={p.shipBranch}
-        status={p.shipStatus}
-        error={p.shipError}
-        onClose={p.closeShip}
-        onSubmit={p.submitShip}
-        onTitleChange={p.onShipTitleChange}
-        onBodyChange={p.onShipBodyChange}
-        onCreatePrChange={p.setShipCreatePr}
-        onDraftChange={p.setShipDraft}
-        onOpenPrHub={p.onOpenPrHubFromShip}
+        open={wt.ship.open}
+        busy={wt.ship.busy}
+        success={wt.ship.success}
+        title={wt.ship.title}
+        body={wt.ship.body}
+        createPr={wt.ship.createPr}
+        draft={wt.ship.draft}
+        branch={wt.ship.branch}
+        status={wt.ship.status}
+        error={wt.ship.error}
+        onClose={wt.ship.close}
+        onSubmit={wt.ship.submit}
+        onTitleChange={wt.ship.setTitle}
+        onBodyChange={wt.ship.setBody}
+        onCreatePrChange={wt.ship.setCreatePr}
+        onDraftChange={wt.ship.setDraft}
+        onOpenPrHub={wt.ship.openPrHub}
         onToast={p.showToast}
       />
       <ShortcutsHelpModal

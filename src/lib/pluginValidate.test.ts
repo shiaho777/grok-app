@@ -142,6 +142,7 @@ describe("isLocalPluginPath", () => {
   it("accepts filesystem paths", () => {
     expect(isLocalPluginPath("/tmp/my-plugin")).toBe(true);
     expect(isLocalPluginPath("~/code/plugin")).toBe(true);
+    expect(isLocalPluginPath("file:///tmp/my-plugin")).toBe(true);
     expect(isLocalPluginPath("./plugin")).toBe(true);
     expect(isLocalPluginPath("../plugin")).toBe(true);
     expect(isLocalPluginPath("C:\\Users\\a\\plugin")).toBe(true);

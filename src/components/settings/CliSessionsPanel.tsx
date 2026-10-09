@@ -46,6 +46,7 @@ export function CliSessionsPanel({
   const searchSeq = useRef(0);
   /** Bumps after list refresh so active CLI search re-enriches linked state. */
   const [listEpoch, setListEpoch] = useState(0);
+  const [agentHome, setAgentHome] = useState<string | null>(null);
   const isIndependent = sessionDataMode !== "shared";
 
   const refresh = useCallback(async () => {
@@ -69,6 +70,20 @@ export function CliSessionsPanel({
     if (!open) return;
     void refresh();
   }, [open, refresh, sessionDataMode]);
+
+  useEffect(() => {
+    if (!open || !isIndependent || !api.isTauri()) {
+      setAgentHome(null);
+      return;
+    }
+    void api
+      .providersList()
+      .then((list) => {
+        const home = (list?.agentHome || "").trim();
+        setAgentHome(home || null);
+      })
+      .catch(() => setAgentHome(null));
+  }, [open, isIndependent]);
 
   // When the search box is non-empty, call host `cli_sessions_search`
   // (`grok sessions search` + local first-prompt fallback). Debounced.
@@ -125,7 +140,7 @@ export function CliSessionsPanel({
   const pending = countUnlinkedCliSessions(rows);
   const sourceHome =
     rows.find((r) => r.sourceHome)?.sourceHome ??
-    (isIndependent ? "~/.grok-app/agent-home" : "~/.grok");
+    (isIndependent ? agentHome || "" : "~/.grok");
 
   const copyAgentId = async (agentSessionId: string) => {
     try {
@@ -282,9 +297,11 @@ export function CliSessionsPanel({
               {t("settings.cliSessionsIndependentNote")}
             </div>
           ) : null}
-          <div className="settings-cli-sessions__path" title={sourceHome}>
-            {t("settings.cliSessionsSource", { path: sourceHome })}
-          </div>
+          {sourceHome ? (
+            <div className="settings-cli-sessions__path" title={sourceHome}>
+              {t("settings.cliSessionsSource", { path: sourceHome })}
+            </div>
+          ) : null}
           <div className="settings-cli-sessions__actions">
             <button
               type="button"

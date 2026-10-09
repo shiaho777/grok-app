@@ -123,21 +123,34 @@ export function resolveMarkdownPaintSource(
   return streaming ? throttledSource : liveSource;
 }
 
-/** `html[data-stream-perf]` as written by AppWorkbench during a live turn. */
-export function readStreamPerfFlag(
-  dataset: { streamPerf?: string } | null | undefined,
-): boolean {
-  return dataset?.streamPerf === "1";
-}
-
 /**
- * Wallpaper `<video>` should decode only when the window is visible and
- * stream-perf is off. CSS drops pane backdrop-filter separately; media frost stays.
+ * Wallpaper `<video>` should decode whenever the window is visible. Streaming
+ * must not pause/restart it because that rebuilds the compositor layer.
  */
 export function shouldPlayWallpaperVideo(opts: {
   visibilityState?: string;
-  streamPerf?: boolean;
 }): boolean {
-  if ((opts.visibilityState ?? "visible") === "hidden") return false;
-  return !opts.streamPerf;
+  return (opts.visibilityState ?? "visible") !== "hidden";
+}
+
+/**
+ * Module-level stream-perf flag for JS readers (virtual overscan, etc.).
+ * Prefer this over `document.documentElement.dataset.streamPerf` so wallpaper
+ * sessions can skip flipping html attributes that invalidate macOS blur layers.
+ */
+let streamPerfActive = false;
+
+export function setStreamPerfActive(on: boolean): void {
+  streamPerfActive = on;
+}
+
+export function isStreamPerfActive(): boolean {
+  return streamPerfActive;
+}
+
+/** When wallpaper frost is active, skip syncing `data-stream-perf` onto `<html>`. */
+export function shouldSyncStreamPerfDataset(opts: {
+  wallpaperActive: boolean;
+}): boolean {
+  return !opts.wallpaperActive;
 }

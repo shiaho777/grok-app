@@ -2,9 +2,17 @@
  * Wallpaper source helpers — X search + Imagine gallery types and pure logic.
  */
 
-export type WallpaperSourceKind = "x" | "imagine" | "library";
+export type WallpaperSourceKind =
+  | "x"
+  | "web"
+  | "openverse"
+  | "pexels"
+  | "imagine"
+  | "grok_album"
+  | "library";
 
 export type WallpaperGalleryItem = {
+  metadata?: WallpaperMediaRecord | null;
   id: string;
   thumbUrl: string;
   fullUrl: string;
@@ -18,9 +26,31 @@ export type WallpaperGalleryItem = {
   likes?: number | null;
   localPath?: string | null;
   prompt?: string | null;
+  sourceUrl?: string | null;
+  sourceName?: string | null;
+  authorName?: string | null;
+  authorUrl?: string | null;
+  license?: string | null;
+  licenseUrl?: string | null;
 };
 
 export type WallpaperSearchResult = {
+  meta?: {
+    requestId?: string | null;
+    requestedMode?: "cli" | "responses_preview" | "auto" | string;
+    routeUsed: "cli" | "responses";
+    fallbackReason?: string | null;
+    durationMs: number;
+    responsesDurationMs?: number | null;
+    cliDurationMs?: number | null;
+    cacheHit?: boolean;
+    continuationId?: string | null;
+    searchCalls?: number | null;
+    candidateCount?: number;
+    validCount?: number;
+    model?: string | null;
+    effort?: string | null;
+  } | null;
   items: WallpaperGalleryItem[];
   errorCode?: string | null;
   message?: string | null;
@@ -34,6 +64,7 @@ export type WallpaperFetchResult = {
 };
 
 export type WallpaperLibraryEntry = {
+  metadata?: WallpaperMediaRecord | null;
   path: string;
   name: string;
   source: string;
@@ -42,16 +73,94 @@ export type WallpaperLibraryEntry = {
   modifiedMs: number;
 };
 
+export type WallpaperMediaRecord = {
+  id: string;
+  source: string;
+  sourceUrl: string | null;
+  sourceName?: string | null;
+  authorName?: string | null;
+  authorUrl?: string | null;
+  license: string | null;
+  licenseUrl: string | null;
+  title: string | null;
+  width: number | null;
+  height: number | null;
+  durationMs?: number | null;
+  prompt: string | null;
+  generation: {
+    operation: string;
+    aspectRatio: string | null;
+    resolution: string | null;
+    duration: number | null;
+    requestedModel: string | null;
+  } | null;
+  parentId: string | null;
+  favorite: boolean;
+  purpose: "cache" | "generated";
+  bytes: number;
+  modifiedMs: number;
+};
+
+export type WallpaperLibraryPurpose =
+  | "all"
+  | "favorites"
+  | "generated"
+  | "cache";
+
+/** Compare local paths without making POSIX paths case-insensitive. */
+export function sameWallpaperLocalPath(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const normalize = (value: string | null | undefined) => {
+    const path = value?.trim().replace(/\\/g, "/") ?? "";
+    return /^[a-z]:\//i.test(path) || path.startsWith("//")
+      ? path.toLowerCase()
+      : path;
+  };
+  const normalizedLeft = normalize(left);
+  return normalizedLeft.length > 0 && normalizedLeft === normalize(right);
+}
+
 export type WallpaperSourceErrorCode =
+  | "catalog_write_failed"
+  | "catalog_recovery_invalid"
+  | "pexels_key_required"
+  | "pexels_key_invalid"
+  | "service_unavailable"
+  | "rate_limited"
   | "auth_required"
   | "cli_missing"
   | "search_failed"
   | "empty"
   | "download_failed"
   | "url_blocked"
+  | "imagine_source_invalid"
   | "imagine_failed"
+  | "imagine_zdr_unavailable"
+  | "imagine_access_denied"
+  | "imagine_rate_limited"
+  | "imagine_request_rejected"
+  | "imagine_upstream_failed"
+  | "imagine_network_failed"
+  | "imagine_result_invalid"
   | "timeout"
   | "generic";
+
+const imagineErrorCodes = new Set<WallpaperSourceErrorCode>([
+  "imagine_access_denied",
+  "imagine_rate_limited",
+  "imagine_request_rejected",
+  "imagine_upstream_failed",
+  "imagine_network_failed",
+  "imagine_result_invalid",
+  "imagine_zdr_unavailable",
+]);
+
+function imagineErrorCode(raw: string): WallpaperSourceErrorCode | null {
+  const code = raw.trim() as WallpaperSourceErrorCode;
+  return imagineErrorCodes.has(code) ? code : null;
+}
 
 /** Map host error strings / codes to a stable UI code. */
 export function parseWallpaperSourceError(err: unknown): WallpaperSourceErrorCode {
@@ -64,6 +173,11 @@ export function parseWallpaperSourceError(err: unknown): WallpaperSourceErrorCod
           ? String((err as { message: unknown }).message)
           : "";
   const s = raw.toLowerCase();
+  const imagineError = imagineErrorCode(s);
+  if (imagineError) return imagineError;
+  if (s.includes("catalog_recovery_invalid")) return "catalog_recovery_invalid";
+  if (s.includes("catalog_")) return "catalog_write_failed";
+  if (s.includes("rate_limited")) return "rate_limited";
   if (s.includes("auth_required")) return "auth_required";
   if (s.includes("cli_missing")) return "cli_missing";
   if (
@@ -83,6 +197,7 @@ export function parseWallpaperSourceError(err: unknown): WallpaperSourceErrorCod
     return "download_failed";
   }
   if (s.includes("desktop_only")) return "generic";
+  if (s.includes("imagine_source_invalid")) return "imagine_source_invalid";
   // timeout before imagine so "imagine timeout" is not swallowed as imagine_failed
   if (s.includes("timeout") || s.includes("timed out")) return "timeout";
   if (s.includes("imagine_failed")) return "imagine_failed";
@@ -103,12 +218,18 @@ export function errorCodeFromSearchResult(
   if (result.items.length > 0) return null;
   const code = (result.errorCode || "").toLowerCase();
   if (!code) return "empty";
+  const imagineError = imagineErrorCode(code);
+  if (imagineError) return imagineError;
+  if (code === "catalog_recovery_invalid") return "catalog_recovery_invalid";
+  if (code.startsWith("catalog_")) return "catalog_write_failed";
   if (code === "auth_required") return "auth_required";
   if (code === "cli_missing") return "cli_missing";
   if (code === "search_failed") return "search_failed";
+  if (code === "imagine_source_invalid") return "imagine_source_invalid";
   if (code === "imagine_failed") return "imagine_failed";
   if (code === "empty") return "empty";
   if (code === "timeout") return "timeout";
+  if (code.includes("rate_limited")) return "rate_limited";
   return "generic";
 }
 
@@ -125,6 +246,23 @@ export function dedupeGalleryItems(
     out.push(it);
   }
   return out;
+}
+
+/** Append remote results without duplicating an already-materialized card. */
+export function appendWallpaperGalleryItems(
+  existing: WallpaperGalleryItem[],
+  incoming: WallpaperGalleryItem[],
+): WallpaperGalleryItem[] {
+  const ids = new Set(existing.map((item) => `${item.source}:${item.id}`));
+  const urls = new Set(existing.map((item) => item.fullUrl));
+  const fresh = incoming.filter((item) => {
+    const id = `${item.source}:${item.id}`;
+    if (ids.has(id) || urls.has(item.fullUrl)) return false;
+    ids.add(id);
+    urls.add(item.fullUrl);
+    return true;
+  });
+  return dedupeGalleryItems([...existing, ...fresh]);
 }
 
 function mimeFromName(name: string): string {
@@ -281,10 +419,11 @@ function ipcBytesToArrayBuffer(value: unknown): ArrayBuffer {
 export async function readLocalMediaBlobViaIpc(
   absolutePath: string,
   invokeImpl?: MediaInvoke,
-  opts?: { chunkSize?: number },
+  opts?: { chunkSize?: number; maxBytes?: number; signal?: AbortSignal },
 ): Promise<{ blob: Blob; info: MediaFileInfo }> {
   const invoke: MediaInvoke =
     invokeImpl ?? ((await import("@tauri-apps/api/core")).invoke as MediaInvoke);
+  opts?.signal?.throwIfAborted();
   const rawInfo = await invoke("media_file_info", {
     path: absolutePath,
   });
@@ -294,7 +433,8 @@ export async function readLocalMediaBlobViaIpc(
 
   const candidate = rawInfo as Partial<MediaFileInfo>;
   const bytes = Number(candidate.bytes);
-  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MEDIA_IPC_MAX_FILE) {
+  const maxBytes = Math.min(opts?.maxBytes ?? MEDIA_IPC_MAX_FILE, MEDIA_IPC_MAX_FILE);
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxBytes) {
     throw new Error("read_failed: invalid media size");
   }
   const chunkSize = opts?.chunkSize ?? MEDIA_IPC_CHUNK;
@@ -321,6 +461,7 @@ export async function readLocalMediaBlobViaIpc(
   const parts: ArrayBuffer[] = [];
   let got = 0;
   for (let offset = 0; offset < bytes; offset += chunkSize) {
+    opts?.signal?.throwIfAborted();
     const length = Math.min(chunkSize, bytes - offset);
     const raw = await invoke("media_read_file_chunk", {
       path: absolutePath,
@@ -339,6 +480,7 @@ export async function readLocalMediaBlobViaIpc(
   if (got !== bytes) {
     throw new Error(`read_failed: short IPC read (${got}/${bytes} bytes)`);
   }
+  opts?.signal?.throwIfAborted();
   return { blob: new Blob(parts, { type: info.mime }), info };
 }
 
@@ -464,7 +606,8 @@ export function libraryEntryToGalleryItem(
     /\.(mp4|m4v|webm|mov)$/i.test(entry.name || abs)
       ? "video"
       : "image";
-  const source = (entry.source || "library").trim() || "library";
+  const source =
+    (entry.metadata?.source || entry.source || "library").trim() || "library";
   return {
     id: libraryEntryId(entry),
     thumbUrl: fileUrl,
@@ -472,13 +615,20 @@ export function libraryEntryToGalleryItem(
     kind,
     source,
     localPath: abs || null,
-    textPreview: entry.name || null,
+    textPreview: entry.metadata?.title || entry.name || null,
     username: null,
     postUrl: null,
-    prompt: null,
+    prompt: entry.metadata?.prompt ?? null,
     likes: null,
-    width: null,
-    height: null,
+    width: entry.metadata?.width ?? null,
+    height: entry.metadata?.height ?? null,
+    metadata: entry.metadata,
+    sourceUrl: entry.metadata?.sourceUrl,
+    sourceName: entry.metadata?.sourceName,
+    authorName: entry.metadata?.authorName,
+    authorUrl: entry.metadata?.authorUrl,
+    license: entry.metadata?.license,
+    licenseUrl: entry.metadata?.licenseUrl,
   };
 }
 
@@ -499,4 +649,3 @@ export function libraryEntriesToGalleryItems(
       : [...entries];
   return dedupeGalleryItems(ordered.map(libraryEntryToGalleryItem));
 }
-

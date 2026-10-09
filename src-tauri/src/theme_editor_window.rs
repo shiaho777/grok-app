@@ -14,9 +14,9 @@ use crate::tray_i18n;
 pub const THEME_EDITOR_WINDOW_LABEL: &str = "theme-editor";
 
 const EDITOR_WIDTH: f64 = 840.0;
-const EDITOR_HEIGHT: f64 = 860.0;
+const EDITOR_HEIGHT: f64 = 600.0;
 const EDITOR_MIN_WIDTH: f64 = 560.0;
-const EDITOR_MIN_HEIGHT: f64 = 480.0;
+const EDITOR_MIN_HEIGHT: f64 = 400.0;
 
 fn resolve_boot_theme(pref: &str) -> &'static str {
     match pref.trim().to_ascii_lowercase().as_str() {

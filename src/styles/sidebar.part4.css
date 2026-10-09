@@ -111,7 +111,7 @@ html[data-sidebar-density="compact"] .session-row__meta {
   background: var(--danger);
 }
 
-/* Primary actions under logo (new session / scheduled) */
+/* Primary actions under titlebar (brand/new session / scheduled) */
 .sidebar-nav {
   display: flex;
   flex-direction: column;
@@ -122,40 +122,173 @@ html[data-sidebar-density="compact"] .session-row__meta {
 
 .sidebar-nav .nav-new,
 .sidebar-nav .nav-item {
+  box-sizing: border-box;
   width: 100%;
   margin: 0;
-  padding-left: 0;
+  /* Shared row chrome — keep icon column on the same axis as tree-l2 */
+  min-height: 36px;
+  padding: 0 6px;
+  gap: 10px;
 }
 
 .nav-new {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  margin: 0 var(--space-1) var(--space-2);
-  padding: 8px 10px;
   border-radius: var(--radius-md);
   color: var(--text-secondary);
   font-size: var(--text-sm);
   text-align: left;
   font-weight: 500;
+  overflow: hidden;
 }
 
-.nav-new:hover {
+.nav-new:hover,
+.nav-new:focus-visible {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.nav-new__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: var(--text-sm);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  /* Leave: collapse pad immediately (delay 0). Enter delay set on :hover. */
+  transition: padding-right 0.2s
+    var(--motion-pane-ease, cubic-bezier(0.22, 1, 0.36, 1));
+  transition-delay: 0s;
+}
+
+/* Same 20px icon column as .nav-item__icon so marks share one vertical axis */
+.nav-new__brand > .grok-logo,
+.nav-new__brand > .g-icon--grok-mark,
+.nav-new__brand > .sidebar-brand-mark--icon {
+  width: var(--tree-l1-gutter);
+  min-width: var(--tree-l1-gutter);
+  height: var(--tree-l1-gutter);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.nav-new__brand > .sidebar-brand-mark--wordmark,
+.nav-new__brand > .deepseek-full-mark.sidebar-brand-mark,
+.nav-new__brand > .opencode-wordmark.sidebar-brand-mark {
+  width: auto;
+  min-width: 0;
+  height: 16px;
+  max-width: min(120px, 42vw);
+}
+
+/*
+ * Absolute right cluster: whole chip slides in + fades (no max-width wipe,
+ * no mid-animation line wrap). Brand keeps a soft right pad so it never
+ * collides under the incoming chip.
+ */
+.nav-new__action {
+  position: absolute;
+  right: 6px;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  opacity: 0;
+  transform: translateX(14px);
+  pointer-events: none;
+  /* Leave: hide immediately. Enter: 0.1s dwell before slide/fade. */
+  transition:
+    opacity 0.18s ease,
+    transform 0.22s var(--motion-pane-ease, cubic-bezier(0.22, 1, 0.36, 1));
+  transition-delay: 0s;
+}
+
+.nav-new__edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.nav-new__label {
+  display: inline-block;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: var(--text-sm);
+  line-height: 1.2;
+}
+
+.nav-new:hover .nav-new__brand {
+  /* Room for edit icon + longest locale label without overlapping brand */
+  padding-right: 8rem;
+  transition-delay: 0.1s;
+}
+
+.nav-new:hover .nav-new__action {
+  opacity: 1;
+  transform: translateX(0);
+  color: var(--text-primary);
+  pointer-events: auto;
+  transition-delay: 0.1s;
+}
+
+/* Keyboard focus: show immediately (no dwell). */
+.nav-new:focus-visible .nav-new__brand {
+  padding-right: 8rem;
+  transition-delay: 0s;
+}
+
+.nav-new:focus-visible .nav-new__action {
+  opacity: 1;
+  transform: translateX(0);
+  color: var(--text-primary);
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-new__action,
+  .nav-new__brand {
+    transition: none;
+    transform: none;
+  }
+
+  .nav-new:hover .nav-new__brand,
+  .nav-new:focus-visible .nav-new__brand {
+    padding-right: 8rem;
+    transition-delay: 0s;
+  }
+
+  .nav-new:hover .nav-new__action,
+  .nav-new:focus-visible .nav-new__action {
+    transition-delay: 0s;
+  }
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: calc(100% - 8px);
-  margin: 1px 4px;
-  padding: 8px 10px;
   border-radius: var(--radius-md);
   color: var(--text-secondary);
   font-size: var(--text-sm);
   text-align: left;
+  line-height: 1.2;
 }
 
 .nav-item:hover:not(:disabled) {
@@ -239,12 +372,41 @@ html[data-sidebar-density="compact"] .session-row__meta {
 }
 
 /* Footer account row — solid separator, inset hover (Codex / ChatGPT style) */
+.sidebar__account {
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar__footer-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidebar__footer-settings {
+  flex-shrink: 0;
+}
+
 .user-menu {
   position: relative;
   flex-shrink: 0;
   margin-top: 0;
   padding: 8px 10px 10px;
   border-top: 1px solid var(--border-subtle);
+}
+
+.sidebar__account .user-menu {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border-top: none;
+  margin: 0;
 }
 
 .sidebar__footer {
@@ -524,8 +686,42 @@ html[data-sidebar-density="compact"] .session-row__meta {
 .user-menu__quota {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
+  padding: 8px 10px 6px;
+}
+
+.user-menu__quota-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.user-menu__quota-meter .account-quota-bar {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-menu__sep {
+  height: 1px;
+  margin: 4px 8px 6px;
+  background: var(--border-subtle);
+  border: none;
+}
+
+.sidebar__footer-remain {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.sidebar__footer-remain.is-low {
+  color: var(--danger, #e25555);
 }
 
 /* Top-right: reset time beside display name */
@@ -590,13 +786,17 @@ html[data-sidebar-density="compact"] .session-row__meta {
   white-space: nowrap;
 }
 
-/* Custom provider balance (DeepSeek) under account card */
+.user-menu__remain.is-low {
+  color: var(--danger, #e25555);
+}
+
+/* Custom provider balance (DeepSeek) at menu top */
 .user-menu__balance {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  margin-top: 4px;
+  padding: 8px 10px 6px;
 }
 
 .user-menu__balance-detail {
@@ -733,16 +933,6 @@ html[data-sidebar-density="compact"] .session-row__meta {
   white-space: nowrap;
   line-height: 1.2;
   min-width: 0;
-}
-
-/* Remaining SuperGrok % on the footer row — single number only */
-.user-meta__quota {
-  flex-shrink: 0;
-  font-size: 12px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  letter-spacing: -0.02em;
 }
 
 /* Status line lives in popover only — keep footer single-line */

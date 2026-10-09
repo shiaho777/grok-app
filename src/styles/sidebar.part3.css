@@ -13,6 +13,7 @@
 .prompt-history,
 .modal,
 .search-panel,
+.session-mru-panel,
 .cmm__pop,
 .auto-panel,
 .drop-overlay__card {
@@ -342,7 +343,9 @@
 }
 
 .sidebar-brand-row__left .grok-logo,
-.sidebar-brand-row__left .g-icon--grok-mark {
+.sidebar-brand-row__left .g-icon--grok-mark,
+.nav-new__brand .grok-logo,
+.nav-new__brand .g-icon--grok-mark {
   color: inherit;
 }
 
@@ -353,7 +356,7 @@
 
 /* ===== Sidebar icon hover (optional micro-motion) ===== */
 .nav-item:not(:hover) .g-icon--anim svg,
-.nav-new:not(:hover) .g-icon--anim svg,
+.nav-new:not(:hover):not(:focus-visible) .g-icon--anim svg,
 .brand__collapse:not(:hover) .g-icon--anim svg,
 .section-head:not(:hover) .g-icon--anim svg,
 .section-head__action:not(:hover) .g-icon--anim svg,
@@ -568,8 +571,9 @@
   flex-shrink: 0;
 }
 
+/* Hover / keyboard focus only — do not keep actions visible on the
+   last-clicked / active project row (matches session-row affordance). */
 .project-row:hover .project-row__actions,
-.project-row--active .project-row__actions,
 .project-row:focus-within .project-row__actions {
   display: inline-flex;
 }

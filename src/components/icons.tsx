@@ -27,6 +27,7 @@ import {
   IconBox as TbBox,
   IconBoxMultiple as TbBoxMultiple,
   IconBrush as TbBrush,
+  IconCamera as TbCamera,
   IconCalendarTime as TbCalendarTime,
   IconCheck as TbCheck,
   IconClearAll as TbClearAll,
@@ -62,10 +63,13 @@ import {
   IconFolder as TbFolder,
   IconFolderPlus as TbFolderPlus,
   IconHandStop as TbHandStop,
+  IconHeart as TbHeart,
   IconHelp as TbHelp,
+  IconHome as TbHome,
   IconHexagon as TbHexagon,
   IconInfoCircle as TbInfoCircle,
   IconKeyboard as TbKeyboard,
+  IconKey as TbKey,
   IconLanguage as TbLanguage,
   IconExternalLink as TbExternalLink,
   IconLayoutSidebar as TbLayoutSidebar,
@@ -88,6 +92,7 @@ import {
   IconPinned as TbPinned,
   IconPinnedOff as TbPinnedOff,
   IconPlayerStop as TbPlayerStop,
+  IconPlayerPlay as TbPlayerPlay,
   IconPlug as TbPlug,
   IconPlus as TbPlus,
   IconPuzzle as TbPuzzle,
@@ -114,6 +119,7 @@ import {
   IconUpload as TbUpload,
   IconUser as TbUser,
   IconPhoto as TbPhoto,
+  IconPhotoSearch as TbPhotoSearch,
   IconMovie as TbMovie,
   IconWand as TbWand,
   IconWorld as TbWorld,
@@ -249,7 +255,9 @@ export const IconSeparator = wrap(TbSeparator);
 export const IconCrop = wrap(TbCrop);
 export const IconNotes = wrap(TbNotes);
 export const IconImagine = wrap(TbWand);
+export const IconHeart = wrap(TbHeart);
 export const IconVideo = wrap(TbMovie);
+export const IconPlay = wrap(TbPlayerPlay);
 export const IconAutomations = wrap(TbBolt);
 /** Scheduled / “已安排” nav — calendar clock. */
 export const IconScheduled = wrap(TbCalendarTime);
@@ -392,6 +400,8 @@ export const IconDeviceMobile = wrap(TbDeviceMobile);
 export const IconExportMd = wrap(TbMarkdown);
 /** Conversation share-card / export as image. */
 export const IconExportImage = wrap(TbPhoto);
+export const IconCamera = wrap(TbCamera);
+export const IconPhotoSearch = wrap(TbPhotoSearch);
 export const IconArchive = wrap(TbArchive);
 export const IconChat = wrap(TbMessage);
 export const IconFileText = wrap(TbFileText);
@@ -419,7 +429,10 @@ export const IconLanguage = wrap(TbLanguage);
 export const IconInfo = wrap(TbInfoCircle);
 /** Help / “?” tip trigger next to settings labels. */
 export const IconHelp = wrap(TbHelp);
+/** Unbound chats / Default workspace. */
+export const IconHome = wrap(TbHome, { className: "g-icon--home" });
 export const IconKeyboard = wrap(TbKeyboard);
+export const IconKey = wrap(TbKey);
 /** Slash palette / goal mode */
 export const IconTarget = wrap(TbTarget);
 /** Side-browser Design Mode — click to inspect. */

@@ -61,17 +61,12 @@ import { AttachmentCard } from "@/components/AttachmentCard";
 import { ImageUi, imageUiLabels } from "@/components/ImageUi";
 import { ContextMenu, type ContextMenuItem } from "@/components/ContextMenu";
 import { UserAttachments } from "@/components/lobe-chat/UserAttachments";
-import { TranscriptSelectionToolbar } from "@/components/TranscriptSelectionToolbar";
-import { UserQuoteCards } from "@/components/ComposerQuoteCards";
-import {
-  parseQuotesFromContent,
-  type ComposerQuote,
-} from "@/lib/composerQuotes";
-import type { ResourceOpenTarget } from "@/components/ResourceViewer";
+import { TranscriptSelectionToolbarHost } from "@/components/TranscriptSelectionToolbarHost";
+import { useComposerSendKeyPref } from "@/hooks/useComposerSendKeyPref";
+import { isSelectionInsideTranscript } from "@/lib/transcriptSelectionBar";
+import type { ResourceOpenTarget } from "@/components/resource-viewer/types";
 import {
   IconArrowsMinimize,
-  IconChat,
-  IconClock,
   IconCopy,
   IconExportMd,
   IconFork,
@@ -118,6 +113,8 @@ import {
   estimateChatRowHeight,
   splitVirtSpacerHeights,
 } from "@/lib/chatVirtualList";
+import { chatRowPaint } from "@/lib/chatRowPaintPolicy";
+import { countFailedToolSegments } from "@/lib/phaseErrorExcerpt";
 import { scrollPerfDebug } from "@/lib/scrollPerfDebug";
 import { StructuredJsonPanel } from "./StructuredJsonPanel";
 import {
@@ -133,7 +130,6 @@ import {
   shouldSpillLongAssistant,
 } from "@/lib/longAssistantSpill";
 import {
-  previewUserMessageText,
   shouldFoldUserMessage,
   USER_MSG_PREVIEW_CHARS,
 } from "@/lib/userMessageFold";
@@ -142,17 +138,9 @@ import { Thinking } from "./Thinking";
 import { LeadFragmentsStrip } from "./LeadFragmentsStrip";
 import { BackBottom } from "./BackBottom";
 import { InlineUserEdit } from "./InlineUserEdit";
-import { SkillChip } from "@/components/SkillChip";
-import { ChatRefChip } from "@/components/ChatRefChip";
-import { useAttachedChatLookup } from "@/components/AttachedChatLookup";
 import { HighlightedText } from "@/components/HighlightedText";
+import { UserMessageBody } from "./ThreadUserBody";
 import { findChatMatches } from "@/lib/chatFind";
-import { hydrateDisplayContent, parseStoredContent } from "@/lib/draftDoc";
-import { parseScheduledUserContent } from "@/lib/automations";
-import {
-  parseRemoteImUserContent,
-  remoteImChannelLabel,
-} from "@/lib/remoteImUserContent";
 import { extractAutomationPayload } from "@/lib/automationSetup";
 import {
   isToolStepMessage,
@@ -167,10 +155,15 @@ import {
   toolSegmentIsRunning,
 } from "./TimelineToolRow";
 import { TimelinePhaseBlock } from "./TimelinePhaseBlock";
+import { TurnTail } from "./TurnTail";
+import { TurnChangedFiles } from "./TurnChangedFiles";
 import {
   buildAssistantTimeline,
   shouldShowTrailingLiveThinking,
 } from "@/lib/timelinePhases";
+import type { SessionFileChange } from "@/lib/sessionChanges";
+import { collectTurnModifiedPaths } from "@/lib/turnChangedFiles";
+import { estimateDurationSecFromTimestamps } from "@/lib/formatWorkDuration";
 import { resolveChatTranscriptEmptyState } from "@/lib/chatTranscriptEmpty";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -185,6 +178,10 @@ import {
   TOOL_STEPS_AUTO_COLLAPSE_CHANGE_EVENT,
   loadToolStepsAutoCollapsePref,
 } from "@/lib/toolStepsAutoCollapsePref";
+import {
+  CHAT_VIRTUAL_SCROLL_CHANGE_EVENT,
+  loadChatVirtualScrollPref,
+} from "@/lib/chatVirtualScrollPref";
 import {
   TRANSCRIPT_FILTER_CHANGE_EVENT,
   filterMessagesForTranscript,
@@ -411,266 +408,6 @@ const AssistantMessageBody = memo(function AssistantMessageBody({
   );
 });
 
-const UserBodyText = memo(function UserBodyText({
-  content,
-  findQuery,
-  findActiveOccurrence,
-}: {
-  content: string;
-  findQuery?: string;
-  findActiveOccurrence?: number | null;
-}) {
-  const chatLookup = useAttachedChatLookup();
-  const hydrated = hydrateDisplayContent(content);
-  const segs = parseStoredContent(hydrated);
-  if (
-    !segs.some(
-      (s) => s.type === "skill" || s.type === "plugin" || s.type === "chat",
-    )
-  ) {
-    if (findQuery?.trim()) {
-      return (
-        <span className="user-msg-body">
-          <HighlightedText
-            text={hydrated}
-            query={findQuery}
-            activeOccurrence={findActiveOccurrence ?? null}
-          />
-        </span>
-      );
-    }
-    return <span className="user-msg-body">{hydrated}</span>;
-  }
-  return (
-    <span className="user-msg-body">
-      {segs.map((s, i) => {
-        if (s.type === "skill") {
-          return <SkillChip key={`sk-${i}-${s.name}`} name={s.name} size="sm" />;
-        }
-        if (s.type === "plugin") {
-          return (
-            <SkillChip
-              key={`pl-${i}-${s.name}`}
-              name={s.name}
-              size="sm"
-              kind="plugin"
-            />
-          );
-        }
-        if (s.type === "chat") {
-          const status = chatLookup.statusOf(s.sessionId);
-          return (
-            <ChatRefChip
-              key={`ch-${i}-${s.sessionId}`}
-              title={chatLookup.titleOf(s.sessionId)}
-              status={status}
-              size="sm"
-              onOpen={
-                chatLookup.onOpen
-                  ? () => chatLookup.onOpen?.(s.sessionId)
-                  : undefined
-              }
-            />
-          );
-        }
-        if (findQuery?.trim() && s.text) {
-          return (
-            <HighlightedText
-              key={`t-${i}`}
-              text={s.text}
-              query={findQuery}
-              activeOccurrence={findActiveOccurrence ?? null}
-            />
-          );
-        }
-        return (
-          <span key={`t-${i}`} className="user-msg-body__text">
-            {s.text}
-          </span>
-        );
-      })}
-    </span>
-  );
-});
-
-/** Render skill chips / plain text for the user bubble body. */
-const UserPlainOrSkills = memo(function UserPlainOrSkills({
-  content,
-  findQuery,
-  findActiveOccurrence,
-  locale,
-}: {
-  content: string;
-  findQuery?: string;
-  findActiveOccurrence?: number | null;
-  locale: Locale;
-}) {
-  const parsed = parseQuotesFromContent(content);
-  const body = parsed.text;
-  const quotes: ComposerQuote[] = parsed.quotes;
-  const tr = createT(locale);
-  const [showFull, setShowFull] = useState(false);
-
-  const targetText = body || (quotes.length ? "" : content);
-  const findActiveHere = !!findQuery?.trim();
-  const canFold = shouldFoldUserMessage(targetText) && !findActiveHere;
-  const displayText =
-    canFold && !showFull ? previewUserMessageText(targetText) : targetText;
-
-  const handleBubbleClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (!canFold) return;
-      const sel = window.getSelection();
-      if (sel && sel.toString().trim().length > 0) return;
-      const target = e.target as HTMLElement | null;
-      if (target?.closest("button, a, .skill-chip, .chat-ref-chip")) return;
-      setShowFull((v) => !v);
-    },
-    [canFold],
-  );
-
-  return (
-    <>
-      <UserQuoteCards
-        quotes={quotes}
-        countLabel={tr("composer.quoteCount", { n: String(quotes.length) })}
-      />
-      {body.trim() || !quotes.length ? (
-        <div
-          className={
-            "lobe-chat-user-body-wrap" +
-            (canFold ? " lobe-chat-user-body-wrap--foldable" : "") +
-            (canFold && !showFull ? " lobe-chat-user-body-wrap--collapsed" : "")
-          }
-          onClick={canFold ? handleBubbleClick : undefined}
-          title={
-            canFold
-              ? showFull
-                ? tr("inspect.collapse")
-                : tr("inspect.expandMore", { n: "" })
-              : undefined
-          }
-        >
-          <UserBodyText
-            content={displayText}
-            findQuery={findQuery}
-            findActiveOccurrence={findActiveOccurrence}
-          />
-          {canFold ? (
-            <div className="lobe-chat-user-fold-cue" aria-hidden>
-              <span>{showFull ? "▲" : "▼"}</span>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </>
-  );
-});
-
-/**
- * User bubble: skill chips + scheduled / Remote IM headers as pill tags
- * (`[Scheduled: title]` / `[Remote IM · feishu]` → label, not raw brackets).
- */
-const UserMessageBody = memo(function UserMessageBody({
-  content,
-  scheduledLabel,
-  remoteImLabel,
-  locale,
-  findQuery,
-  findActiveOccurrence,
-}: {
-  content: string;
-  /** Short badge word, e.g. 已安排 / Scheduled */
-  scheduledLabel: string;
-  /** Short badge word, e.g. 远程 IM / Remote IM */
-  remoteImLabel: string;
-  locale: Locale;
-  findQuery?: string;
-  findActiveOccurrence?: number | null;
-}) {
-  const scheduled = parseScheduledUserContent(content);
-  if (scheduled) {
-    return (
-      <div className="lobe-chat-user-msg">
-        <span className="lobe-scheduled-tag" title={scheduled.title}>
-          <IconClock size={13} className="lobe-scheduled-tag__icon" />
-          <span className="lobe-scheduled-tag__kind">{scheduledLabel}</span>
-          <span className="lobe-scheduled-tag__sep" aria-hidden>
-            ·
-          </span>
-          <span className="lobe-scheduled-tag__title">
-            {findQuery?.trim() ? (
-              <HighlightedText
-                text={scheduled.title}
-                query={findQuery}
-                activeOccurrence={null}
-              />
-            ) : (
-              scheduled.title
-            )}
-          </span>
-        </span>
-        {scheduled.body.trim() ? (
-          <div className="lobe-chat-user-msg__body">
-            <UserPlainOrSkills
-              content={scheduled.body}
-              locale={locale}
-              findQuery={findQuery}
-              findActiveOccurrence={findActiveOccurrence}
-            />
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  const remoteIm = parseRemoteImUserContent(content);
-  if (remoteIm) {
-    const channelTitle = remoteImChannelLabel(remoteIm.channel, locale);
-    const tip = `${remoteImLabel} · ${channelTitle}`;
-    return (
-      <div className="lobe-chat-user-msg">
-        <span className="lobe-scheduled-tag lobe-remote-im-tag" title={tip}>
-          <IconChat size={13} className="lobe-scheduled-tag__icon" />
-          <span className="lobe-scheduled-tag__kind">{remoteImLabel}</span>
-          <span className="lobe-scheduled-tag__sep" aria-hidden>
-            ·
-          </span>
-          <span className="lobe-scheduled-tag__title">
-            {findQuery?.trim() ? (
-              <HighlightedText
-                text={channelTitle}
-                query={findQuery}
-                activeOccurrence={null}
-              />
-            ) : (
-              channelTitle
-            )}
-          </span>
-        </span>
-        {remoteIm.body.trim() ? (
-          <div className="lobe-chat-user-msg__body">
-            <UserPlainOrSkills
-              content={remoteIm.body}
-              locale={locale}
-              findQuery={findQuery}
-              findActiveOccurrence={findActiveOccurrence}
-            />
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  return (
-    <UserPlainOrSkills
-      content={content}
-      locale={locale}
-      findQuery={findQuery}
-      findActiveOccurrence={findActiveOccurrence}
-    />
-  );
-});
 
 
 export interface ConversationThreadProps {
@@ -720,7 +457,7 @@ export interface ConversationThreadProps {
   onRewindToUserMessage?: (message: ChatMessage) => void;
   onForkFromAssistantMessage?: (message: ChatMessage) => void;
   onOpenResource?: (
-    target: import("@/components/ResourceViewer").ResourceOpenTarget,
+    target: import("@/components/resource-viewer/types").ResourceOpenTarget,
   ) => void;
   /** File card soft-fail (missing / denied / host-only). */
   onOpenError?: (message: string) => void;
@@ -778,6 +515,8 @@ export interface ConversationThreadProps {
   onOpenSessionChanges?: () => void;
   /** Open a modified path from turn activity. */
   onOpenModifiedPath?: (path: string) => void;
+  /** Live session file before/after for turn inline diff cards (#998). */
+  sessionChanges?: SessionFileChange[];
   /**
    * When false, hide message time labels in action rows.
    * createdAt data is still kept on messages — UI only.
@@ -837,6 +576,9 @@ type TranscriptMessageRowProps = {
   m: ChatMessage;
   msgIndex: number;
   virtualized: boolean;
+  /** Geometric window may be wide; shell skips markdown. */
+  paint: "rich" | "shell";
+  shellHeight: number;
   measureRef: (index: number) => (el: HTMLElement | null) => void;
   locale: Locale;
   tr: ReturnType<typeof createT>;
@@ -899,6 +641,9 @@ type TranscriptMessageRowProps = {
   onAddAttachmentToComposer?: ConversationThreadProps["onAddAttachmentToComposer"];
   onContinueInterrupted?: ConversationThreadProps["onContinueInterrupted"];
   latestContinuableEndId?: string | null;
+  onOpenSessionChanges?: ConversationThreadProps["onOpenSessionChanges"];
+  onOpenModifiedPath?: ConversationThreadProps["onOpenModifiedPath"];
+  sessionChanges?: ConversationThreadProps["sessionChanges"];
   /**
    * Epoch ms for live thinking on the active streaming assistant
    * (turn / post-steer clock). Null for finished rows.
@@ -913,6 +658,8 @@ function transcriptRowPropsEqual(
   if (a.m !== b.m) return false;
   if (a.msgIndex !== b.msgIndex) return false;
   if (a.virtualized !== b.virtualized) return false;
+  if (a.paint !== b.paint) return false;
+  if (a.paint === "shell" && a.shellHeight !== b.shellHeight) return false;
   if (a.locale !== b.locale) return false;
   if (a.projectPath !== b.projectPath) return false;
   if (a.sshAlias !== b.sshAlias) return false;
@@ -932,6 +679,9 @@ function transcriptRowPropsEqual(
   if (a.canRegenerate !== b.canRegenerate) return false;
   if (a.onContinueInterrupted !== b.onContinueInterrupted) return false;
   if (a.latestContinuableEndId !== b.latestContinuableEndId) return false;
+  if (a.onOpenSessionChanges !== b.onOpenSessionChanges) return false;
+  if (a.onOpenModifiedPath !== b.onOpenModifiedPath) return false;
+  if (a.sessionChanges !== b.sessionChanges) return false;
   if (a.turnLive !== b.turnLive) return false;
   if (a.canRewindSession !== b.canRewindSession) return false;
   if (a.canForkFromAssistant !== b.canForkFromAssistant) return false;
@@ -939,7 +689,13 @@ function transcriptRowPropsEqual(
   if (a.regenerateModels !== b.regenerateModels) return false;
   if (a.regenerateModelId !== b.regenerateModelId) return false;
   if (a.activeAssistantId !== b.activeAssistantId) return false;
-  if (a.liveTool !== b.liveTool) return false;
+  if (a.liveTool !== b.liveTool) {
+    // liveTool only paints below the ACTIVE assistant row (fallback line when
+    // no running tool is woven into segments). A new streaming reference per
+    // token must not bust every other row's memo.
+    const liveHere = a.m.id === a.activeAssistantId || b.m.id === b.activeAssistantId;
+    if (liveHere) return false;
+  }
   // Do not compare wovenMessages by array identity — weave used to clone every
   // row on each stream notify and bust all memos. History `m` refs + toolInlined
   // via `a.m` are enough; the streaming assistant already has a new `m`.
@@ -962,6 +718,8 @@ const TranscriptMessageRow = memo(function TranscriptMessageRow({
   m,
   msgIndex,
   virtualized,
+  paint,
+  shellHeight,
   measureRef,
   locale,
   tr,
@@ -1015,6 +773,9 @@ const TranscriptMessageRow = memo(function TranscriptMessageRow({
   onAddAttachmentToComposer,
   onContinueInterrupted,
   latestContinuableEndId,
+  onOpenSessionChanges,
+  onOpenModifiedPath,
+  sessionChanges,
 }: TranscriptMessageRowProps) {
   void _timeTick;
   const renderStartRef = useRef<number | null>(null);
@@ -1048,6 +809,17 @@ const TranscriptMessageRow = memo(function TranscriptMessageRow({
     ) : (
       node
     );
+
+  if (paint === "shell") {
+    return wrap(
+      <div
+        className="lobe-chat-item lobe-chat-item--shell"
+        aria-hidden
+        data-virt-shell=""
+        style={{ height: Math.max(0, shellHeight), overflow: "hidden" }}
+      />,
+    );
+  }
 
   if (
     isEndOfTurnMarker(m.marker) ||
@@ -1476,13 +1248,12 @@ const TranscriptMessageRow = memo(function TranscriptMessageRow({
   const isNodeFocus = focusMessageId === m.id;
   // Phase projection: thought+tools collapse when phase ends (content
   // / next thought), not only when the full answer is done.
-  const timelineUnits = useMemo(
-    () =>
-      buildAssistantTimeline(segs, {
-        streaming: !!m.streaming,
-      }),
-    [segs, m.streaming],
-  );
+  // Do NOT wrap in useMemo here — this sits after role/isError early returns.
+  // A streaming assistant that later flips to isError on the same row id would
+  // skip this hook and trip React #30 (fewer hooks than expected) (#1002).
+  const timelineUnits = buildAssistantTimeline(segs, {
+    streaming: !!m.streaming,
+  });
   // Live chrome follows the *current* episode (trailing thought / phase),
   // not “this message already has some body text”. Grok 4.x think→tool
   // loops keep reasoning after the first status sentence.
@@ -1744,6 +1515,38 @@ const TranscriptMessageRow = memo(function TranscriptMessageRow({
               </div>
             );
           })()}
+          {(() => {
+            if (m.streaming) return null;
+            const stamps: Array<string | undefined | null> = [m.createdAt];
+            for (const u of timelineUnits) {
+              if (u.kind === "phase") {
+                for (const t of u.tools) stamps.push(t.createdAt);
+              } else if (u.kind === "tool") {
+                stamps.push(u.tool.createdAt);
+              }
+            }
+            const durationSec = estimateDurationSecFromTimestamps(stamps);
+            const modifiedPaths = collectTurnModifiedPaths(timelineUnits);
+            return (
+              <>
+                <TurnTail
+                  units={timelineUnits}
+                  locale={locale}
+                  streaming={!!m.streaming}
+                  durationSec={durationSec}
+                />
+                <TurnChangedFiles
+                  paths={modifiedPaths}
+                  locale={locale}
+                  streaming={!!m.streaming}
+                  sessionChanges={sessionChanges}
+                  projectPath={projectPath}
+                  onOpenPath={onOpenModifiedPath}
+                  onViewAll={onOpenSessionChanges}
+                />
+              </>
+            );
+          })()}
         </div>
       }
       belowMessage={
@@ -1875,8 +1678,9 @@ export function ConversationThread({
   sessionId = null,
   locateMessageId = null,
   onLocateMessage,
-  onOpenSessionChanges: _onOpenSessionChanges,
-  onOpenModifiedPath: _onOpenModifiedPath,
+  onOpenSessionChanges,
+  onOpenModifiedPath,
+  sessionChanges,
   showTimestamps = true,
   messageTimeFormat = "absolute",
   showReplyLength = false,
@@ -1887,8 +1691,6 @@ export function ConversationThread({
   turnStartedAt = null,
 }: ConversationThreadProps) {
   const tr = useMemo(() => createT(locale), [locale]);
-  void _onOpenSessionChanges;
-  void _onOpenModifiedPath;
 
   /** Re-render relative labels roughly once a minute. */
   const [relativeTick, setRelativeTick] = useState(0);
@@ -2046,6 +1848,7 @@ export function ConversationThread({
       window.removeEventListener(BACK_BOTTOM_ALWAYS_CHANGE_EVENT, onPref);
   }, []);
 
+  const quoteSendPref = useComposerSendKeyPref();
   const [selectionToolbar, setSelectionToolbar] = useState(() =>
     loadTranscriptSelectionToolbarPref(),
   );
@@ -2078,6 +1881,21 @@ export function ConversationThread({
       window.removeEventListener(TOOL_STEPS_AUTO_COLLAPSE_CHANGE_EVENT, onPref);
   }, []);
 
+  /** When false, the transcript is a native overflow list (no virtual window). */
+  const [chatVirtualScroll, setChatVirtualScroll] = useState(() =>
+    loadChatVirtualScrollPref(),
+  );
+  useEffect(() => {
+    const onPref = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail;
+      if (typeof detail === "boolean") setChatVirtualScroll(detail);
+      else setChatVirtualScroll(loadChatVirtualScrollPref());
+    };
+    window.addEventListener(CHAT_VIRTUAL_SCROLL_CHANGE_EVENT, onPref);
+    return () =>
+      window.removeEventListener(CHAT_VIRTUAL_SCROLL_CHANGE_EVENT, onPref);
+  }, []);
+
   /** all | conversation — hide tool_step rows / tool chrome when conversation. */
   const [transcriptFilter, setTranscriptFilter] =
     useState<TranscriptFilterMode>(() => loadTranscriptFilterPref());
@@ -2107,17 +1925,6 @@ export function ConversationThread({
     y: number;
     text: string;
   } | null>(null);
-  const [selectionBar, setSelectionBar] = useState<{
-    x: number;
-    y: number;
-    text: string;
-    sourceMessageId?: string;
-  } | null>(null);
-  const [selectionComment, setSelectionComment] = useState("");
-  const selectionBarText = selectionBar?.text;
-  useEffect(() => {
-    setSelectionComment("");
-  }, [selectionBarText]);
 
   const copyText = useCallback((text: string) => {
     void (async () => {
@@ -2141,9 +1948,7 @@ export function ConversationThread({
   }, []);
 
   const closeSelectionUi = useCallback(() => {
-    setSelectionBar(null);
     setSelectionMenu(null);
-    setSelectionComment("");
   }, []);
 
   useEffect(() => {
@@ -2182,12 +1987,11 @@ export function ConversationThread({
       // Only when the selection lives inside this transcript viewport.
       const scrollEl = scrollRef.current;
       if (!scrollEl) return;
-      const anchor = sel.anchorNode;
-      const focus = sel.focusNode;
-      const inside =
-        (anchor != null && scrollEl.contains(anchor)) ||
-        (focus != null && scrollEl.contains(focus));
-      if (!inside) return;
+      if (
+        !isSelectionInsideTranscript(sel.anchorNode, sel.focusNode, scrollEl)
+      ) {
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       setSelectionMenu({ x: e.clientX, y: e.clientY, text });
@@ -2213,87 +2017,6 @@ export function ConversationThread({
       },
     ];
   }, [selectionMenu, tr, copyText, addQuoteFromSelection]);
-
-  const readTranscriptSelection = useCallback(() => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return null;
-    const text = sel.toString().replace(/\u00a0/g, " ").trim();
-    if (!text) return null;
-    const scrollEl = scrollRef.current;
-    if (!scrollEl) return null;
-    const anchor = sel.anchorNode;
-    const focus = sel.focusNode;
-    const inside =
-      (anchor != null && scrollEl.contains(anchor)) ||
-      (focus != null && scrollEl.contains(focus));
-    if (!inside) return null;
-    let sourceMessageId: string | undefined;
-    let node: Node | null = anchor;
-    while (node && node !== scrollEl) {
-      if (node instanceof HTMLElement) {
-        const id = node.getAttribute("data-message-id");
-        if (id) {
-          sourceMessageId = id;
-          break;
-        }
-      }
-      node = node.parentNode;
-    }
-    let rect: DOMRect | null = null;
-    if (sel.rangeCount > 0) {
-      const r = sel.getRangeAt(0).getBoundingClientRect();
-      if (r.width || r.height) rect = r;
-    }
-    return { text, sourceMessageId, rect };
-  }, []);
-
-  useEffect(() => {
-    if (!selectionToolbar) return;
-    const showBar = (next: {
-      text: string;
-      sourceMessageId?: string;
-      rect: DOMRect | null;
-    }) => {
-      const x = next.rect
-        ? next.rect.left + next.rect.width / 2 - 140
-        : 24;
-      const y = next.rect ? next.rect.bottom + 8 : 24;
-      setSelectionBar({
-        x,
-        y,
-        text: next.text,
-        sourceMessageId: next.sourceMessageId,
-      });
-    };
-    const onSel = () => {
-      const next = readTranscriptSelection();
-      // Focusing the comment box collapses the native selection — keep the bar.
-      if (!next) return;
-      showBar(next);
-    };
-    const onUp = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      const next = readTranscriptSelection();
-      if (next) showBar(next);
-    };
-    document.addEventListener("selectionchange", onSel);
-    document.addEventListener("mouseup", onUp);
-    return () => {
-      document.removeEventListener("selectionchange", onSel);
-      document.removeEventListener("mouseup", onUp);
-    };
-  }, [readTranscriptSelection, selectionToolbar]);
-
-  useEffect(() => {
-    if (!selectionBar) return;
-    const onDoc = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t?.closest(".sel-toolbar")) return;
-      closeSelectionUi();
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [selectionBar, closeSelectionUi]);
 
   const messageNodes = useMemo(
     () => buildSessionMessageNodes(messages),
@@ -2661,12 +2384,26 @@ export function ConversationThread({
    * group (painted at the first row; the rest become zero-height spacers).
    * This is where “loose adjacent tool rows” come from when a turn ends with
    * tools never woven into an assistant bubble.
+   *
+   * Reference-stable across stream flushes: the map rebuilds per token, but
+   * only contributing rows (unwoven tool_step rows + their woven flag) can
+   * change its contents. Reuse the previous Map when that signature matches,
+   * otherwise `a.standaloneToolGroups !== b.standaloneToolGroups` busts every
+   * TranscriptMessageRow memo ~10×/s during streaming.
    */
+  const standaloneToolGroupsSigRef = useRef<{
+    sig: [unknown, boolean][];
+    map: Map<
+      string,
+      { key: string; tools: MessageToolSegment[]; first: boolean }
+    > | null;
+  }>({ sig: [], map: null });
   const standaloneToolGroups = useMemo(() => {
     const map = new Map<
       string,
       { key: string; tools: MessageToolSegment[]; first: boolean }
     >();
+    const sig: [unknown, boolean][] = [];
     let key: string | null = null;
     let firstId: string | null = null;
     let groupTools: MessageToolSegment[] | null = null;
@@ -2681,6 +2418,7 @@ export function ConversationThread({
           (row.toolCallId || "").trim() ||
           (row.id.startsWith("tool-") ? row.id.slice(5) : "");
         const woven = !!tcid && isToolInlinedInAssistants(wovenMessages, tcid);
+        sig.push([row, woven]);
         if (!woven) {
           const seg = toolSegmentFromMessage(row);
           if (seg) {
@@ -2701,6 +2439,18 @@ export function ConversationThread({
       }
       close();
     }
+    const prev = standaloneToolGroupsSigRef.current;
+    if (
+      prev.map &&
+      prev.sig.length === sig.length &&
+      sig.every(([row, woven], i) => {
+        const entry = prev.sig[i];
+        return entry[0] === row && entry[1] === woven;
+      })
+    ) {
+      return prev.map;
+    }
+    standaloneToolGroupsSigRef.current = { sig, map };
     return map;
   }, [transcriptMessages, wovenMessages]);
 
@@ -2754,7 +2504,7 @@ export function ConversationThread({
   ]);
 
   const estimateCacheRef = useRef<
-    Map<string, { len: number; atts: number; h: number }>
+    Map<string, { len: number; atts: number; failed: number; h: number }>
   >(new Map());
 
   // Invalidate estimate cache on session key change
@@ -2778,11 +2528,19 @@ export function ConversationThread({
 
       const body = m.content || "";
       const atts = m.attachments ?? [];
+      const toolSegs = (m.segments ?? []).filter(
+        (s): s is MessageToolSegment => s.kind === "tool",
+      );
+      const failedToolCount =
+        !m.streaming && toolStepsAutoCollapse
+          ? countFailedToolSegments(toolSegs)
+          : 0;
       const cached = estimateCacheRef.current.get(m.id);
       if (
         cached &&
         cached.len === body.length &&
         cached.atts === atts.length &&
+        cached.failed === failedToolCount &&
         !m.streaming
       ) {
         return cached.h;
@@ -2834,15 +2592,12 @@ export function ConversationThread({
         m.role === "user" && shouldFoldUserMessage(body)
           ? USER_MSG_PREVIEW_CHARS
           : body.length;
-      const toolCount = m.segments
-        ? m.segments.filter((s) => s.kind === "tool").length
-        : m.toolCallId
-          ? 1
-          : 0;
+      const toolCount = toolSegs.length || (m.toolCallId ? 1 : 0);
       const est = estimateChatRowHeight({
         contentLength: effectiveContentLength,
         rawContent: body,
         toolCount,
+        failedToolCount,
         thoughtLength: m.thought?.length ?? 0,
         role: m.role,
         attachmentCount,
@@ -2859,12 +2614,18 @@ export function ConversationThread({
         estimateCacheRef.current.set(m.id, {
           len: body.length,
           atts: atts.length,
+          failed: failedToolCount,
           h: est,
         });
       }
       return est;
     },
-    [transcriptMessages, standaloneToolGroups, wovenMessages],
+    [
+      transcriptMessages,
+      standaloneToolGroups,
+      wovenMessages,
+      toolStepsAutoCollapse,
+    ],
   );
 
   const {
@@ -2873,6 +2634,9 @@ export function ConversationThread({
     end: virtEnd,
     paddingTop,
     paddingBottom,
+    richStart,
+    richEnd,
+    rowHeight,
     measureRef,
   } = useChatMessageVirtualizer({
     itemCount: transcriptMessages.length,
@@ -2882,6 +2646,7 @@ export function ConversationThread({
     isPinnedRef,
     conversationKey: conversationKeyForStick,
     forceIndices: forceVirtualIndices,
+    enabled: chatVirtualScroll,
   });
 
   const openMediaCount = useMemo(() => {
@@ -3094,6 +2859,12 @@ export function ConversationThread({
               m={m}
               msgIndex={msgIndex}
               virtualized={virtualized}
+              paint={
+                virtualized
+                  ? chatRowPaint(msgIndex, { richStart, richEnd })
+                  : "rich"
+              }
+              shellHeight={rowHeight(msgIndex)}
               measureRef={measureRef}
               locale={locale}
               tr={tr}
@@ -3164,6 +2935,9 @@ export function ConversationThread({
               onAddAttachmentToComposer={onAddAttachmentToComposer}
               onContinueInterrupted={onContinueInterrupted}
               latestContinuableEndId={latestContinuableEndId}
+              onOpenSessionChanges={onOpenSessionChanges}
+              onOpenModifiedPath={onOpenModifiedPath}
+              sessionChanges={sessionChanges}
             />
           ))}
 
@@ -3244,30 +3018,22 @@ export function ConversationThread({
         onClose={() => setSelectionMenu(null)}
         items={selectionMenuItems}
       />
-      {selectionBar && selectionToolbar ? (
-        <TranscriptSelectionToolbar
-          x={selectionBar.x}
-          y={selectionBar.y}
-          text={selectionBar.text}
-          comment={selectionComment}
-          onCommentChange={setSelectionComment}
-          onCopy={() => {
-            copyText(selectionBar.text);
-            closeSelectionUi();
-          }}
-          onAddQuote={() =>
-            addQuoteFromSelection(
-              selectionBar.text,
-              selectionComment,
-              selectionBar.sourceMessageId,
-            )
+      {selectionToolbar ? (
+        <TranscriptSelectionToolbarHost
+          scrollRef={scrollRef}
+          sessionId={sessionId}
+          onAddQuote={(q) =>
+            addQuoteFromSelection(q.text, q.comment, q.sourceMessageId)
           }
-          onClose={closeSelectionUi}
+          onCopyText={copyText}
+          sendPref={quoteSendPref}
           labels={{
             copy: tr("chat.selectionCopy"),
             addQuote: tr("chat.selectionAddToInput"),
             commentPlaceholder: tr("chat.selectionCommentPlaceholder"),
             commentSubmit: tr("chat.selectionCommentSubmit"),
+            enterHint: tr("chat.selectionEnterHint"),
+            modEnterHint: tr("chat.selectionModEnterHint"),
           }}
         />
       ) : null}

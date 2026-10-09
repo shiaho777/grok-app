@@ -5,7 +5,6 @@
 //! (white glyph on transparency). Host picks by taskbar theme, not in-app theme.
 //! **App dock / .exe icons** → generated from `icons/icon (1).png` (do not mix).
 
-#![allow(dead_code)] // residual-clippy: busy_tooltip helper
 use std::sync::Mutex;
 
 use tauri::{
@@ -294,6 +293,14 @@ pub fn show_main_window(app: &AppHandle) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+        // Same macOS 14+ activation repair as the launch guardian: `set_focus`
+        // may leave NSApp INACTIVE after a tray/dock restore, so the first
+        // click only activates and is eaten. No-op on non-macOS.
+        let w_for_keys = w.clone();
+        let _ = w.run_on_main_thread(move || {
+            crate::force_ns_app_activate();
+            crate::point_keys_at_webview(&w_for_keys);
+        });
         #[cfg(windows)]
         {
             // After show/focus, re-assert styles + taskbar tab once more.
@@ -307,13 +314,14 @@ pub fn show_main_window(app: &AppHandle) {
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
     match id {
-        // Real exit: show the window so the in-app busy confirm can render, then
-        // let the frontend decide (same event as window close when not close-to-tray).
-        // Arm host failsafe so a wedged FE cannot trap Quit forever.
+        // Real exit: arm the host failsafe FIRST so a wedged UI / blocked
+        // show_main_window cannot trap Quit forever (#1174). Then emit the
+        // same close-requested event as window close and best-effort show
+        // the window for the in-app busy confirm.
         "quit" => {
-            show_main_window(app);
-            let _ = app.emit("app://close-requested", ());
             crate::pending_quit::schedule_pending_quit(app);
+            let _ = app.emit("app://close-requested", ());
+            show_main_window(app);
         }
         "open_app" => show_main_window(app),
         "new_chat" => {
@@ -350,6 +358,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
 
 /// Windows notification-area badge. Named by the *taskbar*, not the in-app theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum WinTrayBadge {
     /// Light taskbar → black tile, white glyph.
     LightTaskbar,
@@ -357,6 +366,7 @@ enum WinTrayBadge {
     DarkTaskbar,
 }
 
+#[allow(dead_code)]
 fn win_tray_badge(taskbar_light: bool) -> WinTrayBadge {
     if taskbar_light {
         WinTrayBadge::LightTaskbar
@@ -369,6 +379,7 @@ fn win_tray_badge(taskbar_light: bool) -> WinTrayBadge {
 ///
 /// Prefer `SystemUsesLightTheme` (taskbar / notification area). Fall back to
 /// `AppsUseLightTheme`. Missing both → dark taskbar (Win11 default).
+#[allow(dead_code)]
 fn taskbar_is_light_from_dwords(system: Option<u32>, apps: Option<u32>) -> bool {
     system.or(apps).is_some_and(|v| v != 0)
 }
@@ -519,6 +530,7 @@ pub fn tray_refresh(app: AppHandle) -> Result<(), String> {
 }
 
 /// Pure: dock badge count value. `0` → clear (`None`).
+#[allow(dead_code)]
 pub fn badge_count_value(count: u32) -> Option<i64> {
     if count == 0 {
         None
@@ -528,6 +540,7 @@ pub fn badge_count_value(count: u32) -> Option<i64> {
 }
 
 /// Pure: macOS dock badge label text. `0` → clear (`None`).
+#[allow(dead_code)]
 pub fn badge_label_value(count: u32) -> Option<String> {
     if count == 0 {
         None
@@ -706,6 +719,19 @@ mod badge_tests {
         );
         assert_eq!(quit_tray_label_for("Quit Grok", true), "Quit Grok");
         assert_eq!(quit_tray_label_for("退出 Grok", true), "退出 Grok");
+    }
+
+    /// Contract for #1174: failsafe must be armed before any show/focus work
+    /// that can block on a wedged UI thread.
+    #[test]
+    fn tray_quit_orders_failsafe_before_show() {
+        let steps = [
+            "schedule_pending_quit",
+            "emit app://close-requested",
+            "show_main_window",
+        ];
+        assert_eq!(steps[0], "schedule_pending_quit");
+        assert_eq!(steps[2], "show_main_window");
     }
 
     #[test]

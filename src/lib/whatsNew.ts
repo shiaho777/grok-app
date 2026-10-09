@@ -120,8 +120,10 @@ function extractVersionBody(
   markdown: string,
   version: string,
 ): { rest: string; body: string } | null {
-  // End-of-string anchor: JS has no `\Z` (that is a literal "Z" here), so use
-  // `(?![\s\S])` to let the lazy body run to the next `## [` heading or EOF.
+  // `(?![\s\S])` is the JS way to say "absolute end of input". `\Z` was
+  // intended for that but in JS it is a literal-Z identity escape, so any
+  // section containing a capital Z (e.g. "ZDR", "Zoom") truncated at it and
+  // silently dropped every entry after it from the What's New popup.
   const re = new RegExp(
     `^## \\[${escapeRegExp(version)}\\]([^\\n]*)\\n([\\s\\S]*?)(?=^## \\[|(?![\\s\\S]))`,
     "m",

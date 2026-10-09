@@ -10,6 +10,7 @@ import {
   mcpMetaLine,
   normalizePluginInstallSource,
   normalizePluginUpdateName,
+  fileUrlToLocalPath,
   isProjectSkillSource,
   normalizeSkillSource,
   pluginLoadLabel,
@@ -131,6 +132,15 @@ describe("skillMetaLine / mcpMetaLine", () => {
         vendor: "acme",
       }),
     ).toBe("acme");
+    expect(
+      mcpMetaLine({
+        name: "x-api",
+        transport: "stdio",
+        vendor: "plugin",
+        pluginName: "x-api",
+        fromPlugin: true,
+      }),
+    ).toBe("stdio · plugin:x-api");
   });
 });
 
@@ -277,6 +287,18 @@ describe("plugin helpers", () => {
     expect(normalizePluginInstallSource("")).toBeNull();
     expect(normalizePluginInstallSource("   ")).toBeNull();
     expect(normalizePluginInstallSource(null)).toBeNull();
+    expect(normalizePluginInstallSource('"/tmp/plugin"')).toBe("/tmp/plugin");
+    expect(normalizePluginInstallSource("'/tmp/plugin'")).toBe("/tmp/plugin");
+    expect(normalizePluginInstallSource("file:///tmp/plugin")).toBe(
+      "/tmp/plugin",
+    );
+    expect(normalizePluginInstallSource("file://localhost/tmp/plugin")).toBe(
+      "/tmp/plugin",
+    );
+    expect(fileUrlToLocalPath("file:///C:/Users/a/plugin")).toBe(
+      "C:/Users/a/plugin",
+    );
+    expect(fileUrlToLocalPath("https://github.com/a/b.git")).toBeNull();
 
     expect(normalizePluginUpdateName("  demo ")).toBe("demo");
     expect(normalizePluginUpdateName("")).toBeNull();

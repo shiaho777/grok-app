@@ -34,6 +34,11 @@ import {
   type SessionState,
 } from "@/lib/session";
 import { sessionTranscriptStore } from "@/lib/sessionTranscriptStore";
+import {
+  SESSION_JOURNAL_LOAD_TIMEOUT_MS,
+  isSessionJournalTimeoutError,
+  withJournalLoadDeadline,
+} from "./sessionJournalTimeout";
 
 export type JournalIo = {
   isTauri: () => boolean;
@@ -60,7 +65,7 @@ export type PathClassify = {
 };
 
 export type HydrateSessionJournalResult = {
-  status: "applied" | "aborted" | "failed";
+  status: "applied" | "aborted" | "failed" | "timed_out";
   /** True when deferred reconcile projected the same ids (no second paint). */
   unchanged?: boolean;
   painted: ChatMessage[];
@@ -69,6 +74,8 @@ export type HydrateSessionJournalResult = {
   usage: ContextUsageState;
   refinePromise?: Promise<void>;
 };
+
+export { SESSION_JOURNAL_LOAD_TIMEOUT_MS };
 
 const defaultIo: JournalIo = {
   isTauri: () => api.isTauri(),
@@ -238,6 +245,8 @@ export async function hydrateSessionJournal(opts: {
   stillThisOpen: () => boolean;
   liveState: SessionState | string | null | undefined;
   reconcile?: boolean;
+  /** Override journal-load deadline (tests). Default: SESSION_JOURNAL_LOAD_TIMEOUT_MS. */
+  loadTimeoutMs?: number;
   io?: JournalIo;
   store?: typeof sessionTranscriptStore;
 }): Promise<HydrateSessionJournalResult> {
@@ -246,9 +255,13 @@ export async function hydrateSessionJournal(opts: {
   const sessionId = opts.sessionId;
   const reconcile = opts.reconcile === true;
   const emptyUsage = restoreContextUsageForSession(sessionId, []);
+  const loadTimeoutMs = opts.loadTimeoutMs ?? SESSION_JOURNAL_LOAD_TIMEOUT_MS;
 
   try {
-    const stored = await io.sessionMessages(sessionId, { reconcile });
+    const stored = await withJournalLoadDeadline(
+      io.sessionMessages(sessionId, { reconcile }),
+      loadTimeoutMs,
+    );
     if (!opts.stillThisOpen()) {
       // First open: keep cache warm. Deferred reconcile: just drop.
       if (!reconcile) {
@@ -319,10 +332,25 @@ export async function hydrateSessionJournal(opts: {
       usage: restoreContextUsageForSession(sessionId, stripped),
       refinePromise,
     };
-  } catch {
+  } catch (err) {
+    const timedOut = isSessionJournalTimeoutError(err);
+    const status = timedOut ? "timed_out" : "failed";
+    if (timedOut) {
+      console.warn("[session] journal_load_timeout", {
+        sessionId,
+        reconcile,
+        budgetMs: loadTimeoutMs,
+      });
+    } else {
+      console.warn("[session] journal_load_failed", {
+        sessionId,
+        reconcile,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     if (reconcile) {
       return {
-        status: "failed",
+        status,
         painted: store.getCached(sessionId) ?? [],
         changesFromHistory: [],
         scheduledFromJournal: false,
@@ -340,10 +368,11 @@ export async function hydrateSessionJournal(opts: {
       };
     }
     const cached = store.getCached(sessionId) ?? [];
+    // Keep cached transcript visible; clear loading so the user can retry.
     store.setMessages(cached);
     store.finishJournalLoad(sessionId);
     return {
-      status: "failed",
+      status,
       painted: cached,
       changesFromHistory: [],
       scheduledFromJournal: false,

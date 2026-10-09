@@ -72,6 +72,8 @@ export const enChat = {
   "chat.selectionComment": "Comment",
   "chat.selectionCommentPlaceholder": "Write a comment on this excerpt…",
   "chat.selectionCommentSubmit": "Add comment",
+  "chat.selectionEnterHint": "Enter to add",
+  "chat.selectionModEnterHint": "⌘/Ctrl+Enter to add",
   "chat.selectionToolbar": "Selection",
   "message.edit": "Edit",
   "message.exportMd": "Export MD",
@@ -93,10 +95,15 @@ export const enChat = {
   "chat.thinkingLabel": "Thinking",
   /** Live bare-thought chrome with wall-clock (matches Working for …). */
   "chat.thinkingFor": "Thinking for {duration}",
+  "chat.waitingFirstToken": "Still waiting for the first reply…",
+  "chat.providerRetrying": "Retrying provider {attempt}/{max}",
+  "chat.providerRetryingWithReason": "Retrying provider {attempt}/{max}: {reason}",
   /** Finished work phase with duration (matches Thought for …). */
   "chat.workedFor": "Worked for {duration}",
   /** Finished work phase without a usable duration. */
   "chat.worked": "Worked",
+  /** Folded Worked-for: remaining failed tools past the excerpt cap. */
+  "chat.phaseErrorsMore": "{n} more failed",
   /** Live work phase with wall-clock. */
   "chat.workingFor": "Working for {duration}",
   "chat.working": "Working",
@@ -153,6 +160,10 @@ export const enChat = {
   "chat.codeWrap": "Wrap lines",
   "chat.codeUnwrap": "No wrap",
   "chat.lineNumbers": "Line numbers",
+  "chat.mermaidSource": "Show source",
+  "chat.mermaidDiagram": "Show diagram",
+  "chat.mermaidLoading": "Rendering diagram…",
+  "chat.mermaidError": "Could not render diagram",
   "chat.externalLinkConfirmTitle": "Open external link?",
   "chat.externalLinkConfirmMessage": "You are about to open this link in your browser:\n{url}",
   "chat.externalLinkOpen": "Open link",
@@ -166,4 +177,17 @@ export const enChat = {
   "chat.longReplyShowFull": "Show full reply",
   "chat.longReplyCollapse": "Show preview only",
   "chat.longReplyShowingFull": "Showing the full reply",
+  "chat.changedFiles.aria": "Files changed this turn",
+  "chat.changedFiles.viewAll": "View all",
+  "chat.changedFiles.openFile": "Review changes in {name}",
+  "chat.changedFiles.more": "+{n} more",
+  "chat.changedFiles.delta": "+{added} −{removed}",
+  "chat.changedFiles.expand": "Expand diff for {name}",
+  "chat.changedFiles.collapse": "Collapse diff for {name}",
+  "chat.changedFiles.openInReview": "Open in Review",
+  "chat.changedFiles.noDiffYet": "Diff not available yet — open Review for the full file.",
+  "chat.changedFiles.truncated": "Showing {shown} of {total} lines",
+  "chat.tool.copyCommand": "Copy command",
+  "chat.tool.copyOutput": "Copy output",
+  "chat.changedFiles.copyDiff": "Copy diff",
 } as const;

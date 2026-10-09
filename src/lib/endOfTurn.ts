@@ -160,6 +160,35 @@ export function isEndOfTurnMarker(marker: string | null | undefined): boolean {
   );
 }
 
+function messageLooksLikeEndOfTurn(m: {
+  marker?: string | null;
+  content?: string | null;
+}): boolean {
+  if (isEndOfTurnMarker(m.marker)) return true;
+  const c = (m.content || "").trim();
+  return c.startsWith("turn_end|") || c.startsWith("turn_cancelled|");
+}
+
+/**
+ * True when the open turn (after the last user message) already has an
+ * end-of-turn chip. Used so local Stop + Host `turn_marker` do not paint
+ * two "Stopped by user" rows for one interrupt.
+ */
+export function currentTurnHasEndMarker(
+  messages: ReadonlyArray<{
+    role: string;
+    marker?: string | null;
+    content?: string | null;
+  }>,
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === "user") return false;
+    if (messageLooksLikeEndOfTurn(m)) return true;
+  }
+  return false;
+}
+
 /**
  * Build content for applyTurnMarker so journal reload stays consistent.
  */

@@ -1,6 +1,6 @@
 #[tauri::command]
 pub async fn settings_get() -> Result<AppSettings, String> {
-    Ok(store::load_settings())
+    Ok(store::load_settings_async().await)
 }
 
 /// One-shot notice after corrupt store files were quarantined on load.
@@ -15,8 +15,10 @@ pub async fn settings_set(
     mgr: State<'_, Arc<SessionManager>>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    let prev = store::load_settings();
+    let prev = store::load_settings_async().await;
     let mut settings = settings;
+    settings.wallpaper_x_search_mode =
+        store::normalize_wallpaper_x_search_mode(&settings.wallpaper_x_search_mode).into();
     // Normalize denylist / allowlist so spawn / equality see stable lists.
     settings.disallowed_tools =
         crate::acp_client::normalize_disallowed_tools(&settings.disallowed_tools);
@@ -43,6 +45,9 @@ pub async fn settings_set(
         crate::acp_client::normalize_compaction_mode(&settings.compaction_mode).to_string();
     settings.compaction_detail =
         crate::acp_client::normalize_compaction_detail(&settings.compaction_detail).to_string();
+    // Keep Host routing, returned IPC settings, and persisted JSON on the same
+    // canonical proxy mode. Legacy `use` needs proxyUrl context to migrate.
+    store::normalize_proxy_settings(&mut settings);
     // Audit ledger retention presets: 7 / 30 / 90 / 0 (unlimited).
     settings.audit_ledger_retention_days =
         crate::audit_ledger::normalize_retention_days(settings.audit_ledger_retention_days);
@@ -133,7 +138,11 @@ pub async fn settings_set(
     let schedules_launch_agent_flip =
         prev.schedules_launch_agent != settings.schedules_launch_agent;
 
-    store::save_settings(&settings)?;
+    store::save_settings_async(&settings).await?;
+
+    if proxy_flip {
+        crate::wallpaper_grok_album::close_for_proxy_change(&app);
+    }
 
     if schedules_launch_agent_flip {
         let res = if settings.schedules_launch_agent {
@@ -144,7 +153,7 @@ pub async fn settings_set(
         if let Err(e) = res {
             let mut rolled = settings.clone();
             rolled.schedules_launch_agent = prev.schedules_launch_agent;
-            let _ = store::save_settings(&rolled);
+            let _ = store::save_settings_async(&rolled).await;
             return Err(format!("schedules LaunchAgent: {e}"));
         }
         // Non-macOS enable is unsupported — keep flag false.
@@ -152,7 +161,7 @@ pub async fn settings_set(
         if settings.schedules_launch_agent {
             let mut rolled = settings.clone();
             rolled.schedules_launch_agent = false;
-            let _ = store::save_settings(&rolled);
+            let _ = store::save_settings_async(&rolled).await;
             settings.schedules_launch_agent = false;
         }
     }
@@ -163,7 +172,7 @@ pub async fn settings_set(
         {
             let mut rolled = settings.clone();
             rolled.store_api_keys_in_keychain = prev.store_api_keys_in_keychain;
-            let _ = store::save_settings(&rolled);
+            let _ = store::save_settings_async(&rolled).await;
             return Err(e);
         }
     }
@@ -179,7 +188,7 @@ pub async fn settings_set(
         if let Err(e) = res {
             let mut rolled = settings.clone();
             rolled.launch_at_login = prev.launch_at_login;
-            let _ = store::save_settings(&rolled);
+            let _ = store::save_settings_async(&rolled).await;
             return Err(format!("launch at login: {e}"));
         }
     }
@@ -190,7 +199,7 @@ pub async fn settings_set(
         if settings.session_data_mode == "shared"
             && crate::providers::ensure_independent_for_custom_route()
         {
-            settings = store::load_settings();
+            settings = store::load_settings_async().await;
             tracing::info!(
                 "settings_set: custom route self-healed session_data_mode shared → independent"
             );
@@ -583,6 +592,7 @@ pub async fn secrets_get_masked() -> Result<serde_json::Value, String> {
         "hasOfficialKey": crate::secrets::has_official_key_configured(&s),
         "hasRelayKey": has_provider_key
             || crate::secrets::has_relay_key_configured(&s),
+        "hasPexelsKey": crate::secrets::has_pexels_key_configured(&s),
         "hasSttCustomKey": crate::secrets::has_stt_custom_key_configured(&s),
         "sttCustomKeys": crate::secrets::stt_custom_key_presence(&s),
         "relayBaseUrl": relay_base,
@@ -594,7 +604,7 @@ pub async fn secrets_get_masked() -> Result<serde_json::Value, String> {
             crate::secrets::SecretsBackendKind::Keychain => "keychain",
             crate::secrets::SecretsBackendKind::File => "file",
         },
-        "storeApiKeysInKeychain": store::load_settings().store_api_keys_in_keychain,
+        "storeApiKeysInKeychain": store::load_settings_async().await.store_api_keys_in_keychain,
     }))
 }
 
@@ -606,6 +616,7 @@ pub async fn secrets_set(
     official_api_key: Option<String>,
     relay_base_url: Option<String>,
     relay_api_key: Option<String>,
+    pexels_api_key: Option<String>,
     default_model: Option<String>,
     stt_custom_api_key: Option<String>,
     stt_custom_api_key_provider: Option<String>,
@@ -628,6 +639,9 @@ pub async fn secrets_set(
         } else {
             Some(k)
         };
+    }
+    if let Some(k) = pexels_api_key {
+        s.pexels_api_key = if k.trim().is_empty() { None } else { Some(k.trim().to_string()) };
     }
     if let Some(m) = default_model {
         s.default_model = if m.is_empty() { None } else { Some(m) };

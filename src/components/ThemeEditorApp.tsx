@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { AppearanceSection } from "@/components/settings/AppearanceSection";
+import { ImageViewerProvider } from "@/components/ImageViewer";
 import {
   WindowControls,
   tauriDragRegion,
@@ -57,6 +58,25 @@ function ThemeEditorBody() {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Cache main-workbench aspect so wallpaper focus / export bake match the
+  // main window — not this editor window's own size.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let disposed = false;
+    void import("@/lib/wallpaperExportBake").then(({ watchWallpaperViewportAspect }) =>
+      watchWallpaperViewportAspect(() => {
+        /* cache side-effect only */
+      }).then((unlisten) => {
+        if (disposed) unlisten();
+        else stop = unlisten;
+      }),
+    );
+    return () => {
+      disposed = true;
+      stop?.();
     };
   }, []);
   useEffect(() => {
@@ -135,9 +155,11 @@ function ThemeEditorBody() {
         <h1 className="theme-editor-shell__title sr-only">
           {model.t("user.themeEditor")}
         </h1>
-        <SettingsModelProvider value={model}>
-          <AppearanceSection />
-        </SettingsModelProvider>
+        <ImageViewerProvider locale={locale}>
+          <SettingsModelProvider value={model}>
+            <AppearanceSection />
+          </SettingsModelProvider>
+        </ImageViewerProvider>
       </div>
       {toast ? (
         <div className="app-toast" role="status">
