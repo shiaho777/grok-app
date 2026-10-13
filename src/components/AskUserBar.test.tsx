@@ -178,6 +178,36 @@ describe("AskUserBar", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("Enter inside the free-text textarea does not submit", () => {
+    const onSubmit = vi.fn();
+    render(
+      <AskUserBar
+        payload={payload([
+          {
+            id: "q",
+            question: "Continue?",
+            options: [{ id: "yes", label: "Yes" }],
+          },
+        ])}
+        labels={labels}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />,
+    );
+    // Gate becomes submittable once the option is picked…
+    fireEvent.click(screen.getByRole("radio", { name: "Yes" }));
+    // …then the user opens the custom-answer textarea to add nuance.
+    fireEvent.click(
+      screen.getByRole("button", { name: labels.freeTextHint }),
+    );
+    const textarea = screen.getByRole("textbox");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
+    // Submitting from outside the field still works.
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
   it("Dismiss still cancels the request", () => {
     const onCancel = vi.fn();
     render(
